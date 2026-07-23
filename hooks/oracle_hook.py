@@ -34,10 +34,14 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`\n]*`")
 _DOUBLE_QUOTED = re.compile(r'"[^"\n]*"')
+# Markdown blockquote lines (incl. nested "> >"); anchored to line start so
+# a mid-line ">" (comparisons, shell redirects) is never treated as quoting.
+_BLOCKQUOTE_LINE = re.compile(r"^[ \t]{0,3}>[^\n]*$", re.MULTILINE)
 
 
 def _strip_quoted(text):
     text = _FENCED_CODE.sub(" ", text)
+    text = _BLOCKQUOTE_LINE.sub(" ", text)
     text = _INLINE_CODE.sub(" ", text)
     text = _DOUBLE_QUOTED.sub(" ", text)
     return text
