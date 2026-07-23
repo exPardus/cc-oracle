@@ -34,29 +34,51 @@ MARKERS = (
     "unsure how to proceed",
     # Deflection variant families: live smoke showed models phrase stuckness
     # in idioms the core list never matched ("hit brick wall" — plan retry
-    # section). Each variant is anchored enough that mundane prose ("built a
-    # brick wall", "worked out fine", "workout") cannot contain it.
+    # section). These entries are FAMILY KEYS, not substrings: each maps to a
+    # first-person-anchored regex in _FAMILY_PATTERNS below, so benign
+    # third-person / negated / past-resolved / meta-mention uses ("it has hit
+    # a dead end", "I am not out of ideas yet", "phrases like hit a brick
+    # wall") never match. A miss beats a false positive. Keys stay in MARKERS
+    # so the config markers.remove knob can drop a family like any core marker.
     "hit a brick wall",
-    "hit the brick wall",
-    "hit brick wall",
-    "hitting a brick wall",
-    "hitting the brick wall",
     "at a dead end",
-    "hit a dead end",
-    "reached a dead end",
     "i'm stumped",
-    "i am stumped",
     "i'm at a loss",
-    "i am at a loss",
     "out of ideas",
     "going in circles",
-    "going around in circles",
-    "going round in circles",
     "can't work out",
-    "cannot work out",
     "no idea how",
-    "no idea why",
 )
+
+# First-person subject fragments. Anchoring rule: the pronoun must sit
+# directly against the idiom's verb phrase — no free gap words, so "I think
+# the DFS hit a dead end" (third-party subject) cannot match, and negations
+# ("I am not out of ideas") break adjacency and are dropped by design.
+_FAMILY_PATTERNS = {
+    "hit a brick wall":
+        r"\b(?:i|we)(?:'ve| have)? (?:hit|kept hitting) (?:a |the )?brick wall\b"
+        r"|\b(?:i'm|i am|we're|we are) hitting (?:a |the )?brick wall\b"
+        r"|\b(?:i|we) keep hitting (?:a |the )?brick wall\b",
+    "at a dead end":
+        r"\b(?:i'm|i am|we're|we are) at a dead end\b"
+        r"|\b(?:i|we)(?:'ve| have)? (?:hit|reached) a dead end\b",
+    "i'm stumped":
+        r"\b(?:i'm|i am|we're|we are) stumped\b",
+    "i'm at a loss":
+        r"\b(?:i'm|i am|we're|we are) at a loss\b",
+    "out of ideas":
+        r"\b(?:i'm|i am|we're|we are) (?:running )?out of ideas\b",
+    "going in circles":
+        r"\b(?:i'm|i am|we're|we are) going (?:around |round )?in circles\b"
+        r"|\b(?:i|we) keep going (?:around |round )?in circles\b"
+        r"|\b(?:i|we)(?:'ve| have) been going (?:around |round )?in circles\b",
+    "can't work out":
+        r"\b(?:i|we) (?:can't|cannot|can not) work out\b",
+    "no idea how":
+        r"\b(?:i|we) have no idea (?:how|why)\b"
+        r"|\b(?:i've|we've) (?:got )?no idea (?:how|why)\b",
+}
+_FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 
 # This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
 # CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
@@ -173,7 +195,14 @@ def _sentences(text):
 
 def marker_hit(text, markers=MARKERS):
     low = re.sub(r"\s+", " ", text.lower())
-    return any(m in low for m in markers)
+    for m in markers:
+        family = _FAMILY_RES.get(m)
+        if family is not None:
+            if family.search(low):
+                return True
+        elif m in low:
+            return True
+    return False
 
 
 def is_question_turn(text, markers=MARKERS):
