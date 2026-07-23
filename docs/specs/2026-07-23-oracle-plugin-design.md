@@ -69,7 +69,7 @@ Python stdlib script serving BOTH hook events via subcommand (`stop` | `session-
 - **Loop guards:**
   - Respect `stop_hook_active` — never block a stop that resulted from a prior block.
   - Max one block per turn, enforced per-turn: state file keyed by session id records the `prompt_id` already blocked (Stop-hook stdin carries `prompt_id`); a second stop in the same turn is waved through, a new turn is eligible again. No wall-clock cooldown — a time window would silently swallow a genuinely distinct stuck turn arriving shortly after the first.
-  - State lives under `${CLAUDE_PLUGIN_DATA}` (documented plugin state dir), falling back to the OS temp dir only when unset.
+  - State lives under `${CLAUDE_PLUGIN_DATA}/oracle-state` (namespaced subdir of the documented plugin state dir, so a leaked/foreign `CLAUDE_PLUGIN_DATA` never mixes our state into another plugin's data dir), falling back to `<OS temp dir>/oracle-state` only when unset.
   - Claude Code itself caps Stop blocks at 8 per turn — a platform backstop beneath ours.
 - **Failure posture:** any parse error or unexpected shape → exit 0 (never wedge a session).
 
