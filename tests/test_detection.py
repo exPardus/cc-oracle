@@ -107,7 +107,7 @@ def test_nudge_midline_gt_is_not_blockquote():
     "I hit the brick wall on this refactor.",
     "I hit brick wall on step 3.",
     "I'm hitting a brick wall with this linker error.",
-    "Kept hitting the brick wall on the auth flow.",
+    "I kept hitting the brick wall on the auth flow.",
     # dead end family
     "I'm at a dead end with this stack trace.",
     "I hit a dead end debugging the race.",
@@ -118,17 +118,17 @@ def test_nudge_midline_gt_is_not_blockquote():
     "I'm at a loss with this flaky test.",
     "I am at a loss here.",
     "I'm out of ideas on the deadlock.",
-    "Running out of ideas for this build failure.",
+    "I'm running out of ideas for this build failure.",
     # circles family (doctrine's own language)
     "I keep going in circles on this config issue.",
     "I've been going around in circles with the types.",
-    "Going round in circles trying to reproduce it.",
+    "I'm going round in circles trying to reproduce it.",
     # British "work out" variant of figure-out
     "I can't work out where the config is loaded.",
     "I cannot work out why the mock never fires.",
     # no-idea family
     "I have no idea how to unblock this build.",
-    "No idea why the pipeline segfaults.",
+    "I have no idea why the pipeline segfaults.",
 ])
 def test_marker_variant_families_fire(text):
     assert should_nudge(text)
@@ -143,4 +143,20 @@ def test_marker_variant_families_fire(text):
     "The loop iterates in circles of radius r. Implemented.",
 ])
 def test_variant_near_misses_do_not_fire(text):
+    assert not should_nudge(text)
+
+
+# Idiom families must be anchored to first-person present stuckness: benign
+# third-person, negated, past-resolved, or meta-mention uses must not block
+# (review repros). Doctrine: a miss beats a false positive.
+@pytest.mark.parametrize("text", [
+    "The DFS backtracks whenever it has hit a dead end, which is expected.",
+    "The animation keeps the icons going in circles as designed.",
+    "The user had no idea how the crash happened, so I added logging.",
+    "I am not out of ideas yet — next I will bisect the failing commit.",
+    "This plugin matches phrases like hit a brick wall in assistant text.",
+    "The maze solver marks a cell dead when the walker has reached a dead end.",
+    "Users who are out of ideas can consult the docs. Shipped.",
+])
+def test_anchored_families_ignore_benign_uses(text):
     assert not should_nudge(text)
