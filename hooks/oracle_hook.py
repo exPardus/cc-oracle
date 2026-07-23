@@ -151,3 +151,97 @@ def oracle_consulted_this_turn(entries):
                 if _is_oracle_subagent(subagent):
                     return True
     return False
+
+
+NUDGE = (
+    "You stated uncertainty this turn without consulting the oracle. "
+    "Dispatch the `oracle` agent now with a full brief — Goal, Problem (errors verbatim), "
+    "Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) — "
+    "then implement its plan."
+)
+
+DOCTRINE = """<oracle-plugin>
+Uncertainty is a signal, not a failure. The moment you notice you are unsure, stuck, confused, or going in circles: do NOT keep attempting solo and pollute your context — dispatch the `oracle` agent first, then implement its plan yourself.
+When summoning the oracle, ALWAYS send a full brief: Goal (what the task ultimately wants), Problem (the exact blocker, errors quoted verbatim), Tried (attempts made + why each failed), Context (relevant files/paths, versions, platform, project rules), Question (the specific ask, not "help"). The oracle shares none of your context — a thin brief wastes the consult and forces a second round-trip.
+If the dispatch errors for any reason, retry the same Agent call once with model "opus".
+This applies at every tier: strong models may consult the oracle for a fresh-context second opinion.
+</oracle-plugin>"""
+
+
+def _state_path(session_id):
+    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(tempfile.gettempdir(), "claude-oracle")
+    os.makedirs(base, exist_ok=True)
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_") or "unknown"
+    return os.path.join(base, safe + ".json")
+
+
+def _already_blocked(session_id, prompt_id):
+    try:
+        with open(_state_path(session_id), encoding="utf-8") as f:
+            return json.load(f).get("blocked_prompt") == prompt_id
+    except (OSError, ValueError):
+        return False
+
+
+def _record_block(session_id, prompt_id):
+    try:
+        with open(_state_path(session_id), "w", encoding="utf-8") as f:
+            json.dump({"blocked_prompt": prompt_id}, f)
+    except OSError:
+        pass
+
+
+def run_stop(stdin_text):
+    """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
+    try:
+        payload = json.loads(stdin_text)
+        if not isinstance(payload, dict):
+            return 0, ""
+        if payload.get("stop_hook_active"):
+            return 0, ""
+        transcript_path = payload.get("transcript_path")
+        if not transcript_path:
+            return 0, ""
+        entries = load_entries(transcript_path)
+        if not entries:
+            return 0, ""
+        if not should_nudge(last_assistant_text(entries)):
+            return 0, ""
+        if oracle_consulted_this_turn(entries):
+            return 0, ""
+        session_id = payload.get("session_id", "unknown")
+        prompt_id = payload.get("prompt_id") or ""
+        if prompt_id and _already_blocked(session_id, prompt_id):
+            return 0, ""
+        if prompt_id:
+            _record_block(session_id, prompt_id)
+        return 0, json.dumps({"decision": "block", "reason": NUDGE})
+    except Exception:
+        return 0, ""
+
+
+def run_session_start():
+    envelope = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": DOCTRINE,
+        }
+    }
+    return 0, json.dumps(envelope)
+
+
+def main(argv):
+    mode = argv[1] if len(argv) > 1 else ""
+    if mode == "session-start":
+        code, out = run_session_start()
+    elif mode == "stop":
+        code, out = run_stop(sys.stdin.read())
+    else:
+        return 0
+    if out:
+        sys.stdout.write(out)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

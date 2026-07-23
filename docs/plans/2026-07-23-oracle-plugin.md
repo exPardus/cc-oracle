@@ -548,7 +548,7 @@ git commit -m "feat: transcript parsing - assistant-only scan, exact-name turn-s
 
 Contracts confirmed by the research report (`docs/research/2026-07-23-anthropic-docs-report.md` §6): Stop stdin JSON has `session_id`, `prompt_id`, `transcript_path`, `stop_hook_active`; blocking output is exit 0 + stdout `{"decision": "block", "reason": "..."}`; Claude Code itself caps Stop blocks at 8 per turn (our per-turn guard is stricter). SessionStart context injection uses the JSON envelope `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}` on stdout, exit 0. Per-turn guard: state file under `${CLAUDE_PLUGIN_DATA}` (report §3; fall back to OS temp dir when unset) records the `prompt_id` already blocked — never a wall-clock window.
 
-- [ ] **Step 1: Write the failing tests** — `tests/test_stop_entry.py`:
+- [x] **Step 1: Write the failing tests** — `tests/test_stop_entry.py`:
 
 ```python
 import json
@@ -673,12 +673,12 @@ def test_session_start_emits_additional_context_envelope():
     assert len(DOCTRINE.splitlines()) <= 8
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_stop_entry.py -v`
 Expected: FAIL with ImportError.
 
-- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py`:
+- [x] **Step 3: Append implementation** to `hooks/oracle_hook.py`:
 
 ```python
 NUDGE = (
@@ -775,12 +775,12 @@ if __name__ == "__main__":
     sys.exit(main(sys.argv))
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest -q` and `py -3.10 -m pytest -q`
 Expected: full suite PASS on both interpreters.
 
-- [ ] **Step 5: Write `hooks/hooks.json`.** Portability (report §10): `python3` often absent on Windows Git Bash; `python` often absent on modern Ubuntu. Shell-form fallback chaining — if the first interpreter is missing (exit 127, stdin unconsumed) the second runs; the script itself always exits 0, so double-execution cannot happen on success (empirically verified: `sh -c 'nonexistent || cat'` delivers stdin to the fallback):
+- [x] **Step 5: Write `hooks/hooks.json`.** Portability (report §10): `python3` often absent on Windows Git Bash; `python` often absent on modern Ubuntu. Shell-form fallback chaining — if the first interpreter is missing (exit 127, stdin unconsumed) the second runs; the script itself always exits 0, so double-execution cannot happen on success (empirically verified: `sh -c 'nonexistent || cat'` delivers stdin to the fallback):
 
 ```json
 {
@@ -811,7 +811,7 @@ Expected: full suite PASS on both interpreters.
 
 No matcher on SessionStart — doctrine applies on startup, resume, clear, and compact alike.
 
-- [ ] **Step 6: CLI smoke check**
+- [x] **Step 6: CLI smoke check**
 
 Run: `echo '{"session_id":"smoke","transcript_path":"/nope","stop_hook_active":false}' | python hooks/oracle_hook.py stop; echo "exit=$?"`
 Expected: no output, `exit=0`.
@@ -819,7 +819,7 @@ Expected: no output, `exit=0`.
 Run: `python hooks/oracle_hook.py session-start`
 Expected: one-line JSON envelope containing `"hookEventName": "SessionStart"`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add hooks/oracle_hook.py hooks/hooks.json tests/test_stop_entry.py
