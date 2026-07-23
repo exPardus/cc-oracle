@@ -170,10 +170,11 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 
 
 def _state_path(session_id):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(tempfile.gettempdir(), "claude-oracle")
-    os.makedirs(base, exist_ok=True)
+    base = os.environ.get("CLAUDE_PLUGIN_DATA") or tempfile.gettempdir()
+    state_dir = os.path.join(base, "oracle-state")
+    os.makedirs(state_dir, exist_ok=True)
     safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
-    return os.path.join(base, safe + ".json")
+    return os.path.join(state_dir, safe + ".json")
 
 
 def _already_blocked(session_id, prompt_id):

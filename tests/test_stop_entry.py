@@ -125,6 +125,13 @@ def test_state_paths_distinct_for_colliding_session_ids(monkeypatch, tmp_path):
     assert _state_path("a/b") != _state_path("ab")
 
 
+def test_state_dir_is_namespaced_under_plugin_data(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "data"))
+    p = _state_path("some-session")
+    assert Path(p).parent.name == "oracle-state"
+    assert Path(p).parent.parent == tmp_path / "data"
+
+
 def test_string_false_stop_hook_active_does_not_suppress(tmp_path, monkeypatch):
     _isolate_state(monkeypatch, tmp_path)
     payload_dict = json.loads(_payload(tmp_path, [_user_prompt("x"), _assistant_text("I'm stuck. No idea.")]))
