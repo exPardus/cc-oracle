@@ -31,8 +31,8 @@ Success criteria: a haiku/sonnet session, when stuck, dispatches the oracle with
 
 ### 1. Oracle subagent — `agents/oracle.md`
 
-- **Model:** `fable` alias in frontmatter. Aliases only, never hardcoded model IDs — aliases resolve per provider (Anthropic API, Bedrock, Vertex). Fallback: the standing instruction tells the caller that if dispatch fails with a model-unavailable error, retry the Agent call with `model: opus` as a parameter override.
-- **Tools:** Read, Grep, Glob, Bash (read-only use). No Edit, no Write.
+- **Model:** `fable` alias in frontmatter. Aliases only, never hardcoded model IDs — aliases resolve per provider (Anthropic API, Bedrock, Vertex). Per official docs, an alias unavailable on the caller's plan/provider silently falls back to the *inherited* (caller's) model — no error reaches the caller. The standing instruction therefore carries only a generic safety line: if the dispatch *errors* for any reason, retry the same Agent call once with `model: opus`. The silent-downgrade caveat is documented in the README.
+- **Tools:** Read, Grep, Glob only. No Edit, no Write, and no Bash — a Bash grant cannot be technically restricted to read-only use, and the read-only guarantee is architectural, not prose. Code/history questions are answerable from files via Read/Grep/Glob.
 - **Description** (drives proactive dispatch — agent descriptions are always visible to the main model): "Use PROACTIVELY when unsure, stuck, confused, going in circles, or wanting a second opinion — BEFORE attempting solo."
 - **System prompt:**
   - Role: senior consultant with zero shared context. Investigate the codebase directly (Read/Grep/Glob) rather than trusting the brief blindly.
@@ -52,22 +52,25 @@ A SessionStart hook injects a deliberately tiny doctrine (3–6 lines, zero proj
   - **Context** — relevant files/paths, key constraints (versions, platform, project rules)
   - **Question** — the specific ask, not "help"
 - Rationale stated inline: the oracle has zero shared context; a thin brief wastes the consult and forces a second round-trip. One complete brief beats two vague ones.
-- Fallback rule: oracle dispatch fails with model-unavailable → retry with `model: opus` override.
+- Fallback rule: oracle dispatch errors for any reason → retry the same call once with `model: opus` override.
 - Applies to all tiers: strong models may consult for a fresh-context second opinion.
 
-### 3. Stop-hook safety net — `hooks/stop_oracle_nudge.py`
+### 3. Stop-hook safety net — `hooks/oracle_hook.py`
 
-Python stdlib script wired as a Stop hook.
+Python stdlib script serving BOTH hook events via subcommand (`stop` | `session-start`) — one file, one interpreter dependency.
 
 - **Input:** Stop-hook JSON on stdin (includes `transcript_path`, `session_id`, `stop_hook_active`).
 - **Detection:** parse the transcript JSONL; take the final assistant message text; match against a conservative, built-in marker list (e.g. "I'm not sure", "I am not sure", "I'm stuck", "can't figure out", "not certain why", "I'm confused"). Conservative by design: a false positive (annoying block) is worse than a miss, because the instruction path is primary — the hook only catches forgetting.
 - **Assistant-text-only scanning:** only the final *assistant* message is ever scanned. User messages, tool results, and hook-injected context are never matched — a user typing "I'm not sure what I want here" must not trigger the hook. The transcript walk must filter strictly by assistant role and by text content blocks (not tool_use blocks).
+- **Quoted/fenced-text exemption:** markers inside code fences (```…```), inline backtick spans, and double-quoted strings are stripped before matching — an assistant *quoting* an error message or documenting the marker list is not *stating* uncertainty. (Single-quoted spans are NOT stripped: apostrophes in contractions like "I'm" would corrupt matching.)
 - **Asking-the-user suppression:** "I'm not sure" often prefaces a question *to the user* ("I'm not sure which option you prefer — A or B?"), which is legitimate turn-ending behavior, not flailing. The hook must NOT block in that case. Rule: if the sentence containing the marker ends in a question mark, or the message's final sentence is a question, treat the turn as a user-question and exit 0. Marker-in-question always wins over marker-matched.
-- **Suppression:** if an oracle Task/Agent dispatch already occurred this turn, exit 0 silently.
-- **Action on match:** emit `{"decision": "block", "reason": "You stated uncertainty this turn. Consult the oracle agent with a full brief (goal / problem / tried / context / question) before finishing."}`.
+- **Suppression:** if an oracle Task/Agent dispatch already occurred this turn, exit 0 silently. The match rule is exact: `subagent_type == "oracle"` or ends with `":oracle"` (plugin-scoped form) — never a bare substring test, which an unrelated agent name like `my-oracledb-helper` would falsely satisfy.
+- **Action on match:** emit `{"decision": "block", "reason": <nudge>}` where the nudge restates the full-brief fields (Goal / Problem with errors verbatim / Tried / Context / Question) and tells the model to dispatch the oracle then implement its plan.
 - **Loop guards:**
   - Respect `stop_hook_active` — never block a stop that resulted from a prior block.
-  - Max one block per turn; cooldown state kept in a small state file under the plugin data directory, keyed by session id.
+  - Max one block per turn, enforced per-turn: state file keyed by session id records the `prompt_id` already blocked (Stop-hook stdin carries `prompt_id`); a second stop in the same turn is waved through, a new turn is eligible again. No wall-clock cooldown — a time window would silently swallow a genuinely distinct stuck turn arriving shortly after the first.
+  - State lives under `${CLAUDE_PLUGIN_DATA}` (documented plugin state dir), falling back to the OS temp dir only when unset.
+  - Claude Code itself caps Stop blocks at 8 per turn — a platform backstop beneath ours.
 - **Failure posture:** any parse error or unexpected shape → exit 0 (never wedge a session).
 
 ### 4. Plugin manifest
@@ -85,14 +88,14 @@ Python stdlib script wired as a Stop hook.
 
 ## Error handling
 
-- Oracle model unavailable → caller retries with `opus` override (instruction-driven, no code).
+- Oracle model alias unavailable on plan/provider → platform silently falls back to the caller's inherited model (documented behavior; caveat surfaced in README). Dispatch *errors* → caller retries once with `opus` override (instruction-driven, no code).
 - Thin brief → oracle requests missing fields (prompt-driven).
 - Hook parse failures → silent exit 0.
-- Hook loop risk → `stop_hook_active` check + once-per-turn state guard.
+- Hook loop risk → `stop_hook_active` check + per-`prompt_id` once-per-turn guard + platform 8-block cap.
 
 ## Testing
 
-- Unit tests (pytest) for the Stop hook: marker matching (positive/negative cases), suppression when oracle was consulted, `stop_hook_active` respected, malformed transcript → exit 0, once-per-turn guard.
+- Unit tests (pytest) for the Stop hook: marker matching (positive/negative cases, including markers inside code fences / inline code / double quotes as required negatives), suppression when oracle was consulted (exact-name rule incl. plugin-scoped, with substring-lookalike negative), `stop_hook_active` respected, malformed stdin and corrupted transcript → exit 0, per-`prompt_id` once-per-turn guard.
 - Manual integration: haiku session with a seeded stuck-task; verify dispatch, brief completeness, and hook nudge when the consult is skipped.
 
 ## Trade-offs decided
