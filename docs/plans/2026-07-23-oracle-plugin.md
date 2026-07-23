@@ -127,7 +127,7 @@ git commit -m "chore: scaffold plugin manifests, license, pytest config"
 **Interfaces:**
 - Produces: `MARKERS: tuple[str, ...]`, `marker_hit(text: str) -> bool`, `is_question_turn(text: str) -> bool`, `should_nudge(text: str) -> bool`. Task 4 calls `should_nudge`.
 
-- [ ] **Step 1: Write the failing tests** — `tests/test_detection.py`:
+- [x] **Step 1: Write the failing tests** — `tests/test_detection.py`:
 
 ```python
 import sys
@@ -201,12 +201,12 @@ def test_nudge_survives_stripping_when_genuinely_stuck():
     assert should_nudge("I'm stuck. The command `npm test` fails and I can't figure out why.")
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_detection.py -v`
 Expected: FAIL / import error ("No module named 'oracle_hook'").
 
-- [ ] **Step 3: Write minimal implementation** — create `hooks/oracle_hook.py`:
+- [x] **Step 3: Write minimal implementation** — create `hooks/oracle_hook.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -288,12 +288,12 @@ def should_nudge(text):
 
 (`os`, `sys`, `tempfile` are unused until Tasks 3–4 — that is intentional; this is the file's final import block.)
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_detection.py -v`
 Expected: all PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add hooks/oracle_hook.py tests/test_detection.py
