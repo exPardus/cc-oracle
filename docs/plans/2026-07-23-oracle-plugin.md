@@ -314,7 +314,7 @@ git commit -m "feat: uncertainty detection with question and quoted-text suppres
 
 Transcript format (research report §6): one JSON object per line; assistant lines: `{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle", ...}}]}}`; user lines have `"type": "user"` with content either a string or a list of blocks (`text` blocks for real prompts, `tool_result` blocks for tool returns).
 
-- [ ] **Step 1: Write the failing tests** — `tests/test_transcript.py`:
+- [x] **Step 1: Write the failing tests** — `tests/test_transcript.py`:
 
 ```python
 import sys
@@ -435,12 +435,12 @@ def test_tool_results_do_not_count_as_user_prompts():
     assert oracle_consulted_this_turn(entries)
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_transcript.py -v`
 Expected: FAIL with ImportError (names not defined).
 
-- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py` (after `should_nudge`; no new imports needed):
+- [x] **Step 3: Append implementation** to `hooks/oracle_hook.py` (after `should_nudge`; no new imports needed):
 
 ```python
 def load_entries(path):
@@ -521,12 +521,12 @@ def oracle_consulted_this_turn(entries):
     return False
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `python -m pytest tests/test_transcript.py -v`
 Expected: all PASS. Also run `python -m pytest -q` — full suite green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add hooks/oracle_hook.py tests/test_transcript.py

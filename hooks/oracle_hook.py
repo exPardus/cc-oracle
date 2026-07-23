@@ -73,3 +73,81 @@ def should_nudge(text):
         return False
     stripped = _strip_quoted(text)
     return marker_hit(stripped) and not is_question_turn(stripped)
+
+
+def load_entries(path):
+    entries = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict):
+                    entries.append(obj)
+    except OSError:
+        return []
+    return entries
+
+
+def _content_blocks(entry):
+    msg = entry.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, list):
+        return [b for b in content if isinstance(b, dict)]
+    return []
+
+
+def last_assistant_text(entries):
+    """Text of the final assistant message that has text blocks.
+
+    Only assistant entries are scanned — user messages, tool results and
+    hook-injected context must never be matched (spec: assistant-text-only).
+    """
+    for entry in reversed(entries):
+        if entry.get("type") != "assistant":
+            continue
+        texts = [b.get("text", "") for b in _content_blocks(entry) if b.get("type") == "text"]
+        joined = "\n".join(t for t in texts if t).strip()
+        if joined:
+            return joined
+    return ""
+
+
+def _is_real_user_prompt(entry):
+    if entry.get("type") != "user":
+        return False
+    msg = entry.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    blocks = _content_blocks(entry)
+    has_text = any(b.get("type") == "text" for b in blocks)
+    has_tool_result = any(b.get("type") == "tool_result" for b in blocks)
+    return has_text and not has_tool_result
+
+
+def _is_oracle_subagent(name):
+    # Exact-name rule: "oracle" or plugin-scoped "<plugin>:oracle".
+    # Never a bare substring test — "my-oracledb-helper" must not count.
+    return name == "oracle" or name.endswith(":oracle")
+
+
+def oracle_consulted_this_turn(entries):
+    start = 0
+    for i, entry in enumerate(entries):
+        if _is_real_user_prompt(entry):
+            start = i
+    for entry in entries[start:]:
+        if entry.get("type") != "assistant":
+            continue
+        for b in _content_blocks(entry):
+            if b.get("type") == "tool_use" and b.get("name") == "Task":
+                subagent = str((b.get("input") or {}).get("subagent_type", "")).lower()
+                if _is_oracle_subagent(subagent):
+                    return True
+    return False
