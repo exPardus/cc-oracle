@@ -166,10 +166,28 @@ def test_state_path_accepts_own_plugin_data_env(monkeypatch, tmp_path):
 
 
 def test_state_path_accepts_marketplace_scoped_own_dir(monkeypatch, tmp_path):
-    # Harness data dirs can be scoped "<plugin>-<marketplace>".
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle-claude-oracle"))
+    # Harness data dirs can be scoped "<plugin>-<marketplace>". The scoped
+    # name is derived from the manifests — previously this test hardcoded a
+    # wrong marketplace name ("claude-oracle") and only proved the hook
+    # agreed with its own mistake.
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle-cc-oracle"))
     p = Path(_state_path("some-session"))
-    assert tmp_path / "oracle-claude-oracle" in p.parents
+    assert tmp_path / "oracle-cc-oracle" in p.parents
+
+
+def test_own_dir_names_agree_with_manifests_on_disk():
+    # The allowlist must track the manifest JSONs: a future rename of the
+    # plugin or marketplace goes red here instead of silently stranding
+    # state+config in the OS temp dir.
+    import oracle_hook
+    root = Path(oracle_hook.__file__).resolve().parent.parent / ".claude-plugin"
+    plugin = json.loads((root / "plugin.json").read_text(encoding="utf-8"))["name"]
+    market = json.loads((root / "marketplace.json").read_text(encoding="utf-8"))["name"]
+    assert oracle_hook._PLUGIN_NAME == plugin
+    assert oracle_hook._MARKETPLACE_NAME == market
+    assert oracle_hook._OWN_DATA_DIR_NAMES == frozenset(
+        (plugin, plugin + "-" + market, plugin + "@" + market)
+    )
 
 
 def test_state_path_rejects_oracle_prefixed_foreign_plugin(monkeypatch, tmp_path):

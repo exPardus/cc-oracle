@@ -80,14 +80,31 @@ _FAMILY_PATTERNS = {
 }
 _FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 
-# This plugin's identity (.claude-plugin/plugin.json + marketplace.json).
-# Used to verify a CLAUDE_PLUGIN_DATA env var actually belongs to us — the
-# var is inherited by child processes, so a foreign plugin's value can leak
-# into our environment (live incident: codex's data dir received our state
-# file). The allowlist is EXACT known forms, never a prefix test: an open
-# startswith("oracle-") would accept an unrelated "oracle-db-tools" plugin.
-_PLUGIN_NAME = "oracle"
-_MARKETPLACE_NAME = "claude-oracle"
+# This plugin's identity, derived from the manifest JSONs at import so the
+# allowlist can never drift from what the harness actually names our data
+# dir (a hardcoded-but-wrong marketplace name would reject our OWN scoped
+# dir and silently strand state+config in the OS temp dir). Used to verify a
+# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
+# child processes, so a foreign plugin's value can leak into our environment
+# (live incident: codex's data dir received our state file). The allowlist is
+# EXACT known forms, never a prefix test: an open startswith("oracle-") would
+# accept an unrelated "oracle-db-tools" plugin.
+def _manifest_names():
+    plugin, market = "oracle", "cc-oracle"  # fallback if manifests unreadable
+    try:
+        manifest_dir = Path(__file__).resolve().parent.parent / ".claude-plugin"
+        raw = json.loads((manifest_dir / "plugin.json").read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("name"), str) and raw["name"].strip():
+            plugin = raw["name"].strip()
+        raw = json.loads((manifest_dir / "marketplace.json").read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("name"), str) and raw["name"].strip():
+            market = raw["name"].strip()
+    except Exception:
+        pass
+    return plugin, market
+
+
+_PLUGIN_NAME, _MARKETPLACE_NAME = _manifest_names()
 _OWN_DATA_DIR_NAMES = frozenset((
     _PLUGIN_NAME,
     _PLUGIN_NAME + "-" + _MARKETPLACE_NAME,
