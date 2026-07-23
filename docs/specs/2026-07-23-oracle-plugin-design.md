@@ -23,7 +23,7 @@ Success criteria: a haiku/sonnet session, when stuck, dispatches the oracle with
 - No direct API-key sidecar calls; everything goes through the native Agent tool.
 - No MCP server.
 - No oracle write access — advisor only, never fixer.
-- No per-project configuration surface.
+- ~~No per-project configuration surface.~~ *(lifted in v1.1 — see Addendum below)*
 - No persistent consultation log; each consult is fresh.
 - No caller-transcript access for the oracle; the brief is the interface.
 
@@ -104,3 +104,23 @@ Python stdlib script serving BOTH hook events via subcommand (`stop` | `session-
 - **Advisor-only oracle:** keeps the main context authoritative, avoids two-writers conflicts, matches "brief aid" intent.
 - **Aliases over model IDs:** portability across providers and future model families.
 - **Codebase-only reading for the oracle:** past-consult logs and caller-transcript access were considered and rejected (user decision) — the brief is the interface.
+
+## Addendum — v1.1: configuration surface + portability floor
+
+*(Reconstructed scope: the original v1.1 task brief was lost to a fleet task-file truncation; scope derived from the v1 non-goals and trade-offs above.)*
+
+### Configuration surface
+
+- File-based, optional: `~/.claude/oracle.json` (user) merged per-key with `<cwd>/.claude/oracle.json` (project, wins). `cwd` comes from the hook stdin payload — both Stop and SessionStart carry it.
+- Keys: `stop_hook` (bool), `doctrine` (bool), `markers.add` / `markers.remove` (lists of strings; normalized to lowercase + collapsed whitespace before matching, matching the detector's own normalization).
+- Env kill-switch `CC_ORACLE_DISABLE=1|true|yes` silences both hooks (CI use).
+- Failure posture: malformed file or wrong-typed key → that layer/key ignored, defaults apply. Asymmetric on purpose: config trouble leaves the doctrine ON; only an explicit well-formed `false` disables anything. Config can tune the plugin, never break a session.
+- The oracle agent's model stays in `agents/oracle.md` frontmatter — not configurable via this surface (an agent-file concern, not a hook concern).
+
+### Portability floor
+
+- `MIN_PYTHON = (3, 9)` declared in code; `main()` exits 0 silently below the floor. Source syntax stays parseable by older interpreters so the guard is actually reached.
+- Transcripts read with `errors="replace"` — one bad byte in one line never kills detection for the turn.
+- Emitted JSON is ASCII-escaped (`json.dumps` default) — survives any console codepage.
+- Stdlib-only guarantee unchanged; Windows/macOS/Linux path handling via `os.path` only.
+- Enforced by `tests/test_config.py` (floor declaration, invalid-UTF-8 transcript, ASCII-safe output, source compiles).

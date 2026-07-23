@@ -47,12 +47,46 @@ The oracle runs on the `fable` model alias, resolved per provider (Anthropic API
 
 ## Configuration
 
-None in v1.
+Optional, file-based, fail-open. The hook looks for `oracle.json` in two places and merges them per-key:
 
-## Requirements
+1. `~/.claude/oracle.json` — user level
+2. `<project>/.claude/oracle.json` — project level (wins on conflict)
+
+All keys are optional:
+
+```json
+{
+  "stop_hook": true,
+  "doctrine": true,
+  "markers": {
+    "add": ["going in circles"],
+    "remove": ["i'm confused"]
+  }
+}
+```
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `stop_hook` | bool | `true` | `false` disables the Stop-hook safety net entirely |
+| `doctrine` | bool | `true` | `false` disables the SessionStart doctrine injection |
+| `markers.add` | list of strings | `[]` | extra uncertainty markers (lowercased, whitespace-normalized before matching) |
+| `markers.remove` | list of strings | `[]` | built-in markers to drop (case-insensitive) |
+
+Environment kill-switch: `CC_ORACLE_DISABLE=1` (also `true`/`yes`) silences both hooks — useful in CI.
+
+Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply — configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win), while only an explicit, well-formed `false` turns anything off.
+
+## Requirements & portability floor
 
 - Claude Code with plugin support.
-- Python 3.9+ reachable as `python` or `python3` (the hook script is stdlib-only; `hooks/hooks.json` tries `python` first, falling back to `python3`).
+- Python **3.9+** reachable as `python` or `python3` (`hooks/hooks.json` tries `python` first, falling back to `python3`).
+
+The hook script commits to a portability floor:
+
+- **Stdlib only** — no third-party imports, ever.
+- **Windows / macOS / Linux** — no platform-specific paths or shell assumptions.
+- **Below-floor grace** — on a Python older than 3.9 the hook exits 0 silently instead of wedging the session.
+- **Encoding robustness** — transcripts are read with `errors="replace"` (one bad byte never kills detection); emitted JSON is ASCII-escaped so it survives any console codepage.
 
 ## Development
 
@@ -72,6 +106,7 @@ Repo layout:
 | `tests/test_detection.py` | Marker + question/quote-suppression logic |
 | `tests/test_transcript.py` | Transcript parsing / turn analysis |
 | `tests/test_stop_entry.py` | End-to-end stdin→stdout behavior of the hook entrypoints |
+| `tests/test_config.py` | v1.1 configuration surface + portability floor |
 
 Further reading under `docs/`:
 
