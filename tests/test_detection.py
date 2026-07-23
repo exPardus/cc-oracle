@@ -134,6 +134,35 @@ def test_marker_variant_families_fire(text):
     assert should_nudge(text)
 
 
+# Intensifier adverbs between pronoun and idiom are normal first-person
+# stuckness phrasing and must not defeat the anchor (re-review repros). The
+# allowlist is explicit non-negating adverbs — NOT \w+ — so "not" keeps
+# breaking adjacency.
+@pytest.mark.parametrize("text", [
+    "I really have no idea why the mock never fires.",
+    "I'm completely out of ideas on this deadlock.",
+    "I'm totally stumped by this segfault.",
+    "I am honestly at a loss with this flaky test.",
+    "I just can't work out where the config is loaded.",
+    "I simply cannot work out why it fails.",
+    "I have absolutely no idea how to unblock this build.",
+    "I've run out of ideas on this race condition.",
+    "We ran out of ideas after the third bisect.",
+    "I genuinely hit a brick wall with the linker.",
+])
+def test_adverb_tolerant_families_fire(text):
+    assert should_nudge(text)
+
+
+@pytest.mark.parametrize("text", [
+    "I do not have any idea generator wired up yet, but the stub works. Done.",
+    "I am not out of ideas yet — next I will bisect the failing commit again.",
+    "I have not hit a brick wall; progress is steady. Continuing.",
+])
+def test_negation_still_breaks_adjacency(text):
+    assert not should_nudge(text)
+
+
 @pytest.mark.parametrize("text", [
     "We built a brick wall texture for the level. Done.",
     "The street is a dead end; the depot sits at its end. Route mapped.",
