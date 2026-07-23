@@ -47,34 +47,41 @@ The oracle runs on the `fable` model alias, resolved per provider (Anthropic API
 
 ## Configuration
 
-Optional, file-based, fail-open. The hook looks for `oracle.json` in two places and merges them per-key:
+Optional, file-based, fail-open. One file, plugin-local:
 
-1. `~/.claude/oracle.json` — user level
-2. `<project>/.claude/oracle.json` — project level (wins on conflict)
-
-All keys are optional:
-
-```json
-{
-  "stop_hook": true,
-  "doctrine": true,
-  "markers": {
-    "add": ["going in circles"],
-    "remove": ["i'm confused"]
-  }
-}
 ```
+<CLAUDE_PLUGIN_DATA>/oracle-state/config.json
+```
+
+(falling back to `<OS temp dir>/oracle-state/config.json` when `CLAUDE_PLUGIN_DATA` is unset — the exact same base-dir resolution the hook uses for its per-turn state, so the location is environment-independent: no cwd, no HOME involved).
+
+Schema — every key optional; **zero config reproduces v1 behavior exactly**:
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `stop_hook` | bool | `true` | `false` disables the Stop-hook safety net entirely |
 | `doctrine` | bool | `true` | `false` disables the SessionStart doctrine injection |
-| `markers.add` | list of strings | `[]` | extra uncertainty markers (lowercased, whitespace-normalized before matching) |
+| `markers.add` | list of strings | `[]` | extra uncertainty markers (lowercased, whitespace-normalized before matching, same as built-ins) |
 | `markers.remove` | list of strings | `[]` | built-in markers to drop (case-insensitive) |
+| `state_dir` | string | unset | relocates the per-turn block-state files (config file location itself never moves) |
+
+Worked example — quieter hook for a repo where "I'm confused" shows up in legitimate prose, plus one project-specific marker and state on a RAM disk:
+
+```json
+{
+  "markers": {
+    "add": ["going in circles"],
+    "remove": ["i'm confused"]
+  },
+  "state_dir": "R:/oracle-state"
+}
+```
 
 Environment kill-switch: `CC_ORACLE_DISABLE=1` (also `true`/`yes`) silences both hooks — useful in CI.
 
-Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply — configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win), while only an explicit, well-formed `false` turns anything off.
+Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply — configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win); only an explicit, well-formed `false` turns anything off.
+
+There is no log-verbosity knob: the hook has no logging today, and the config surface only exposes behavior the code actually has.
 
 ## Requirements & portability floor
 
