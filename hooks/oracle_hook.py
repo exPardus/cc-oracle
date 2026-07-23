@@ -10,6 +10,11 @@ import re
 import sys
 import tempfile
 
+# Portability floor: everything below this version gets a graceful no-op,
+# never a traceback in the user's session. Source syntax must stay parseable
+# by older interpreters so the guard in main() is actually reached.
+MIN_PYTHON = (3, 9)
+
 # Conservative by design: a false positive (annoying block) is worse than a miss.
 # The instruction path is primary; this hook only catches forgetting.
 MARKERS = (
@@ -26,6 +31,64 @@ MARKERS = (
     "not certain why",
     "unsure how to proceed",
 )
+
+# Configuration surface (v1.1). Precedence: defaults < user < project.
+# Any malformed layer or key is ignored — config can only tune behavior,
+# never break it.
+DEFAULTS = {"stop_hook": True, "doctrine": True, "markers_add": (), "markers_remove": ()}
+CONFIG_RELPATH = os.path.join(".claude", "oracle.json")
+KILL_SWITCH_ENV = "CC_ORACLE_DISABLE"
+
+
+def _normalize_marker(m):
+    return re.sub(r"\s+", " ", m.strip().lower())
+
+
+def _read_config_file(path):
+    """One config layer as a partial dict; {} on any malformation (fail open)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out = {}
+    for key in ("stop_hook", "doctrine"):
+        if isinstance(raw.get(key), bool):
+            out[key] = raw[key]
+    markers = raw.get("markers")
+    if isinstance(markers, dict):
+        for key, dest in (("add", "markers_add"), ("remove", "markers_remove")):
+            val = markers.get(key)
+            if isinstance(val, list):
+                cleaned = tuple(_normalize_marker(v) for v in val if isinstance(v, str) and v.strip())
+                if cleaned:
+                    out[dest] = cleaned
+    return out
+
+
+def load_config(cwd):
+    cfg = dict(DEFAULTS)
+    layers = [os.path.join(os.path.expanduser("~"), CONFIG_RELPATH)]
+    if cwd and isinstance(cwd, str):
+        layers.append(os.path.join(cwd, CONFIG_RELPATH))
+    for path in layers:
+        for key, val in _read_config_file(path).items():
+            cfg[key] = val
+    return cfg
+
+
+def effective_markers(cfg):
+    marks = {_normalize_marker(m) for m in MARKERS}
+    marks -= set(cfg.get("markers_remove", ()))
+    marks |= set(cfg.get("markers_add", ()))
+    return marks
+
+
+def _disabled_by_env():
+    return os.environ.get(KILL_SWITCH_ENV, "").strip().lower() in ("1", "true", "yes")
+
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # Quoting is not stating: markers inside fenced code, inline code, or
@@ -51,12 +114,12 @@ def _sentences(text):
     return [s for s in _SENTENCE_SPLIT.split(text.strip()) if s]
 
 
-def marker_hit(text):
+def marker_hit(text, markers=MARKERS):
     low = re.sub(r"\s+", " ", text.lower())
-    return any(m in low for m in MARKERS)
+    return any(m in low for m in markers)
 
 
-def is_question_turn(text):
+def is_question_turn(text, markers=MARKERS):
     """True when the turn is (or ends with) a question to the user.
 
     Marker-in-question always wins over marker-matched: 'I'm not sure which
@@ -68,22 +131,24 @@ def is_question_turn(text):
     if sents[-1].rstrip().endswith("?"):
         return True
     for s in sents:
-        if s.rstrip().endswith("?") and marker_hit(s):
+        if s.rstrip().endswith("?") and marker_hit(s, markers):
             return True
     return False
 
 
-def should_nudge(text):
+def should_nudge(text, markers=MARKERS):
     if not text:
         return False
     stripped = _strip_quoted(text)
-    return marker_hit(stripped) and not is_question_turn(stripped)
+    return marker_hit(stripped, markers) and not is_question_turn(stripped, markers)
 
 
 def load_entries(path):
     entries = []
     try:
-        with open(path, encoding="utf-8") as f:
+        # errors="replace": one bad byte in one line must not kill detection
+        # for the whole transcript (portability floor).
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -200,10 +265,15 @@ def _record_block(session_id, prompt_id):
 def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
+        if _disabled_by_env():
+            return 0, ""
         payload = json.loads(stdin_text)
         if not isinstance(payload, dict):
             return 0, ""
         if payload.get("stop_hook_active") is True:
+            return 0, ""
+        cfg = load_config(payload.get("cwd"))
+        if cfg["stop_hook"] is not True:
             return 0, ""
         transcript_path = payload.get("transcript_path")
         if not transcript_path:
@@ -211,7 +281,7 @@ def run_stop(stdin_text):
         entries = load_entries(transcript_path)
         if not entries:
             return 0, ""
-        if not should_nudge(last_assistant_text(entries)):
+        if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
             return 0, ""
         if oracle_consulted_this_turn(entries):
             return 0, ""
@@ -226,7 +296,24 @@ def run_stop(stdin_text):
         return 0, ""
 
 
-def run_session_start():
+def run_session_start(stdin_text=""):
+    """Failure posture is the inverse of run_stop's: config trouble means the
+    doctrine IS injected (the default behavior) — only an explicit, well-formed
+    opt-out silences it."""
+    if _disabled_by_env():
+        return 0, ""
+    cwd = None
+    try:
+        payload = json.loads(stdin_text)
+        if isinstance(payload, dict):
+            cwd = payload.get("cwd")
+    except ValueError:
+        pass
+    try:
+        if load_config(cwd)["doctrine"] is False:
+            return 0, ""
+    except Exception:
+        pass
     envelope = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -237,9 +324,11 @@ def run_session_start():
 
 
 def main(argv):
+    if sys.version_info < MIN_PYTHON:
+        return 0
     mode = argv[1] if len(argv) > 1 else ""
     if mode == "session-start":
-        code, out = run_session_start()
+        code, out = run_session_start(sys.stdin.read())
     elif mode == "stop":
         code, out = run_stop(sys.stdin.read())
     else:
