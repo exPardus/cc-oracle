@@ -10,6 +10,12 @@ import re
 import sys
 import tempfile
 import time
+from pathlib import Path
+
+# Portability floor: everything below this version gets a graceful no-op,
+# never a traceback in the user's session. Source syntax must stay parseable
+# by older interpreters so the guard in main() is actually reached.
+MIN_PYTHON = (3, 9)
 
 # Conservative by design: a false positive (annoying block) is worse than a miss.
 # The instruction path is primary; this hook only catches forgetting.
@@ -52,6 +58,95 @@ MARKERS = (
     "no idea why",
 )
 
+# This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
+# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
+# child processes, so a foreign plugin's value can leak into our environment
+# (live incident: codex's data dir received our state file).
+_PLUGIN_NAME = "oracle"
+
+
+def _own_plugin_data():
+    env = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+    if not env:
+        return None
+    base_name = os.path.basename(os.path.normpath(env))
+    # Accept exactly our plugin name, or a harness-scoped form of it
+    # ("oracle-<marketplace>" / "oracle@<marketplace>"). Anything else is
+    # another plugin's dir — never write there.
+    if base_name == _PLUGIN_NAME or base_name.startswith((_PLUGIN_NAME + "-", _PLUGIN_NAME + "@")):
+        return env
+    return None
+
+
+# Configuration surface (v1.1). Plugin-local: one optional file at
+# <own CLAUDE_PLUGIN_DATA or OS temp>/oracle-state/config.json — the same
+# base-dir resolution as the per-turn state, so the location is
+# environment-independent (no cwd, no HOME) and, like the state, cannot be
+# redirected by a foreign plugin's leaked CLAUDE_PLUGIN_DATA. Every default
+# reproduces zero-config behavior exactly; a malformed file or wrong-typed
+# key is ignored — config can only tune behavior, never break it.
+DEFAULTS = {
+    "stop_hook": True,
+    "doctrine": True,
+    "markers_add": (),
+    "markers_remove": (),
+    "state_dir": None,
+}
+KILL_SWITCH_ENV = "CC_ORACLE_DISABLE"
+
+
+def _oracle_data_dir():
+    base = _own_plugin_data() or tempfile.gettempdir()
+    return Path(base) / "oracle-state"
+
+
+def _config_path():
+    return str(_oracle_data_dir() / "config.json")
+
+
+def _normalize_marker(m):
+    return re.sub(r"\s+", " ", m.strip().lower())
+
+
+def load_config():
+    """Effective config: DEFAULTS overlaid with the well-typed keys of
+    config.json. Anything malformed is silently dropped (fail open)."""
+    cfg = dict(DEFAULTS)
+    try:
+        raw = json.loads(Path(_config_path()).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return cfg
+    if not isinstance(raw, dict):
+        return cfg
+    for key in ("stop_hook", "doctrine"):
+        if isinstance(raw.get(key), bool):
+            cfg[key] = raw[key]
+    if isinstance(raw.get("state_dir"), str) and raw["state_dir"].strip():
+        cfg["state_dir"] = raw["state_dir"]
+    markers = raw.get("markers")
+    if isinstance(markers, dict):
+        for key, dest in (("add", "markers_add"), ("remove", "markers_remove")):
+            val = markers.get(key)
+            if isinstance(val, list):
+                cleaned = tuple(_normalize_marker(v) for v in val if isinstance(v, str) and v.strip())
+                if cleaned:
+                    cfg[dest] = cleaned
+    return cfg
+
+
+def effective_markers(cfg):
+    # Config mutates the POST-variant-family set: the built-in families are
+    # the baseline, add/remove apply on top of the full MARKERS tuple.
+    marks = {_normalize_marker(m) for m in MARKERS}
+    marks -= set(cfg.get("markers_remove", ()))
+    marks |= set(cfg.get("markers_add", ()))
+    return marks
+
+
+def _disabled_by_env():
+    return os.environ.get(KILL_SWITCH_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # Quoting is not stating: markers inside fenced code, inline code, or
 # double-quoted strings are exempt. Single quotes are NOT stripped —
@@ -76,12 +171,12 @@ def _sentences(text):
     return [s for s in _SENTENCE_SPLIT.split(text.strip()) if s]
 
 
-def marker_hit(text):
+def marker_hit(text, markers=MARKERS):
     low = re.sub(r"\s+", " ", text.lower())
-    return any(m in low for m in MARKERS)
+    return any(m in low for m in markers)
 
 
-def is_question_turn(text):
+def is_question_turn(text, markers=MARKERS):
     """True when the turn is (or ends with) a question to the user.
 
     Marker-in-question always wins over marker-matched: 'I'm not sure which
@@ -93,16 +188,16 @@ def is_question_turn(text):
     if sents[-1].rstrip().endswith("?"):
         return True
     for s in sents:
-        if s.rstrip().endswith("?") and marker_hit(s):
+        if s.rstrip().endswith("?") and marker_hit(s, markers):
             return True
     return False
 
 
-def should_nudge(text):
+def should_nudge(text, markers=MARKERS):
     if not text:
         return False
     stripped = _strip_quoted(text)
-    return marker_hit(stripped) and not is_question_turn(stripped)
+    return marker_hit(stripped, markers) and not is_question_turn(stripped, markers)
 
 
 def load_entries(path):
@@ -213,37 +308,17 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 </oracle-plugin>"""
 
 
-# This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
-# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
-# child processes, so a foreign plugin's value can leak into our environment
-# (live incident: codex's data dir received our state file).
-_PLUGIN_NAME = "oracle"
-
-
-def _own_plugin_data():
-    env = os.environ.get("CLAUDE_PLUGIN_DATA", "")
-    if not env:
-        return None
-    base_name = os.path.basename(os.path.normpath(env))
-    # Accept exactly our plugin name, or a harness-scoped form of it
-    # ("oracle-<marketplace>" / "oracle@<marketplace>"). Anything else is
-    # another plugin's dir — never write there.
-    if base_name == _PLUGIN_NAME or base_name.startswith((_PLUGIN_NAME + "-", _PLUGIN_NAME + "@")):
-        return env
-    return None
-
-
-def _state_path(session_id):
-    base = _own_plugin_data() or tempfile.gettempdir()
-    state_dir = os.path.join(base, "oracle-state")
-    os.makedirs(state_dir, exist_ok=True)
+def _state_path(session_id, cfg=None):
+    override = (cfg or {}).get("state_dir")
+    state_dir = Path(override) if override else _oracle_data_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
     safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
-    return os.path.join(state_dir, safe + ".json")
+    return str(state_dir / (safe + ".json"))
 
 
-def _already_blocked(session_id, prompt_id):
+def _already_blocked(session_id, prompt_id, cfg=None):
     try:
-        with open(_state_path(session_id), encoding="utf-8") as f:
+        with open(_state_path(session_id, cfg), encoding="utf-8") as f:
             return json.load(f).get("blocked_prompt") == prompt_id
     except (OSError, ValueError):
         return False
@@ -257,6 +332,10 @@ def _prune_stale_state(state_dir):
     try:
         cutoff = time.time() - _STATE_TTL_SECONDS
         for name in os.listdir(state_dir):
+            # config.json lives in the same dir and is long-lived by design —
+            # never prune it, no matter how old.
+            if name == "config.json":
+                continue
             p = os.path.join(state_dir, name)
             try:
                 if os.path.getmtime(p) < cutoff:
@@ -267,12 +346,12 @@ def _prune_stale_state(state_dir):
         pass
 
 
-def _record_block(session_id, prompt_id):
+def _record_block(session_id, prompt_id, cfg=None):
     # Write-to-temp + os.replace: a crash mid-write must never truncate an
     # existing record (a truncated file would allow a double block).
     tmp = None
     try:
-        path = _state_path(session_id)
+        path = _state_path(session_id, cfg)
         state_dir = os.path.dirname(path)
         _prune_stale_state(state_dir)
         fd, tmp = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
@@ -293,11 +372,16 @@ def _record_block(session_id, prompt_id):
 def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
+        if _disabled_by_env():
+            return 0, ""
         # Windows pipes can prepend a UTF-8 BOM.
         payload = json.loads(stdin_text.lstrip("﻿"))
         if not isinstance(payload, dict):
             return 0, ""
         if payload.get("stop_hook_active") is True:
+            return 0, ""
+        cfg = load_config()
+        if cfg["stop_hook"] is not True:
             return 0, ""
         transcript_path = payload.get("transcript_path")
         if not transcript_path:
@@ -308,22 +392,33 @@ def run_stop(stdin_text):
         # Scan the CURRENT turn only: a stuck statement from a previous turn
         # was already stop-checked and must not retrigger.
         entries = entries[_turn_start(entries):]
-        if not should_nudge(last_assistant_text(entries)):
+        if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
             return 0, ""
         if oracle_consulted_this_turn(entries):
             return 0, ""
         session_id = payload.get("session_id", "unknown")
         prompt_id = payload.get("prompt_id") or ""
-        if prompt_id and _already_blocked(session_id, prompt_id):
+        if prompt_id and _already_blocked(session_id, prompt_id, cfg):
             return 0, ""
         if prompt_id:
-            _record_block(session_id, prompt_id)
+            _record_block(session_id, prompt_id, cfg)
         return 0, json.dumps({"decision": "block", "reason": NUDGE})
     except Exception:
         return 0, ""
 
 
-def run_session_start():
+def run_session_start(stdin_text=""):
+    """Failure posture is the inverse of run_stop's: config trouble means the
+    doctrine IS injected (the default behavior) — only an explicit, well-formed
+    opt-out silences it. stdin payload is accepted but unused (config location
+    is environment-independent)."""
+    if _disabled_by_env():
+        return 0, ""
+    try:
+        if load_config()["doctrine"] is False:
+            return 0, ""
+    except Exception:
+        pass
     envelope = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
@@ -337,9 +432,11 @@ def main(argv):
     # Hook entry point: nothing may escape — an uncaught exception exits
     # nonzero and surfaces noise (or worse) in the session.
     try:
+        if sys.version_info < MIN_PYTHON:
+            return 0
         mode = argv[1] if len(argv) > 1 else ""
         if mode == "session-start":
-            code, out = run_session_start()
+            code, out = run_session_start(sys.stdin.read())
         elif mode == "stop":
             code, out = run_stop(sys.stdin.read())
         else:
