@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-from oracle_hook import run_stop, run_session_start, DOCTRINE
+from oracle_hook import run_stop, run_session_start, DOCTRINE, _state_path
 
 
 def _write_transcript(tmp_path, entries):
@@ -118,3 +118,16 @@ def test_session_start_emits_additional_context_envelope():
     assert "oracle" in DOCTRINE.lower()
     # doctrine must stay tiny (spec: 3-6 doctrine lines + 2 wrapper tags)
     assert len(DOCTRINE.splitlines()) <= 8
+
+
+def test_state_paths_distinct_for_colliding_session_ids(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin-data"))
+    assert _state_path("a/b") != _state_path("ab")
+
+
+def test_string_false_stop_hook_active_does_not_suppress(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    payload_dict = json.loads(_payload(tmp_path, [_user_prompt("x"), _assistant_text("I'm stuck. No idea.")]))
+    payload_dict["stop_hook_active"] = "false"
+    code, out = run_stop(json.dumps(payload_dict))
+    assert json.loads(out)["decision"] == "block"
