@@ -61,6 +61,7 @@ Python stdlib script wired as a Stop hook.
 
 - **Input:** Stop-hook JSON on stdin (includes `transcript_path`, `session_id`, `stop_hook_active`).
 - **Detection:** parse the transcript JSONL; take the final assistant message text; match against a conservative, built-in marker list (e.g. "I'm not sure", "I am not sure", "I'm stuck", "can't figure out", "not certain why", "I'm confused"). Conservative by design: a false positive (annoying block) is worse than a miss, because the instruction path is primary — the hook only catches forgetting.
+- **Asking-the-user suppression:** "I'm not sure" often prefaces a question *to the user* ("I'm not sure which option you prefer — A or B?"), which is legitimate turn-ending behavior, not flailing. The hook must NOT block in that case. Rule: if the sentence containing the marker ends in a question mark, or the message's final sentence is a question, treat the turn as a user-question and exit 0. Marker-in-question always wins over marker-matched.
 - **Suppression:** if an oracle Task/Agent dispatch already occurred this turn, exit 0 silently.
 - **Action on match:** emit `{"decision": "block", "reason": "You stated uncertainty this turn. Consult the oracle agent with a full brief (goal / problem / tried / context / question) before finishing."}`.
 - **Loop guards:**
