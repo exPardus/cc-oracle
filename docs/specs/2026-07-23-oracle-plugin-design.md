@@ -107,20 +107,25 @@ Python stdlib script serving BOTH hook events via subcommand (`stop` | `session-
 
 ## Addendum — v1.1: configuration surface + portability floor
 
-*(Reconstructed scope: the original v1.1 task brief was lost to a fleet task-file truncation; scope derived from the v1 non-goals and trade-offs above.)*
+*(Scope confirmed by manager 2026-07-23 after the original task brief was lost to a fleet task-file truncation.)*
 
 ### Configuration surface
 
-- File-based, optional: `~/.claude/oracle.json` (user) merged per-key with `<cwd>/.claude/oracle.json` (project, wins). `cwd` comes from the hook stdin payload — both Stop and SessionStart carry it.
-- Keys: `stop_hook` (bool), `doctrine` (bool), `markers.add` / `markers.remove` (lists of strings; normalized to lowercase + collapsed whitespace before matching, matching the detector's own normalization).
+- Plugin-local, optional, single file: `<CLAUDE_PLUGIN_DATA or OS temp>/oracle-state/config.json` — the same base-dir resolution the hook already uses for per-turn state, so location is environment-independent (no cwd, no HOME).
+- Knobs — only behavior the code actually has; every default reproduces v1 semantics exactly:
+  - `stop_hook` (bool, default `true`) — Stop-hook safety net on/off.
+  - `doctrine` (bool, default `true`) — SessionStart doctrine injection on/off.
+  - `markers.add` / `markers.remove` (lists of strings; normalized to lowercase + collapsed whitespace, matching the detector's own normalization).
+  - `state_dir` (string, default unset) — relocates per-turn block-state files; the config file itself never moves.
+  - No log-verbosity knob: the hook has no logging today.
 - Env kill-switch `CC_ORACLE_DISABLE=1|true|yes` silences both hooks (CI use).
-- Failure posture: malformed file or wrong-typed key → that layer/key ignored, defaults apply. Asymmetric on purpose: config trouble leaves the doctrine ON; only an explicit well-formed `false` disables anything. Config can tune the plugin, never break a session.
+- Failure posture: malformed file or wrong-typed key → ignored, defaults apply. Asymmetric on purpose: config trouble leaves the doctrine ON; only an explicit well-formed `false` disables anything. Config can tune the plugin, never break a session.
 - The oracle agent's model stays in `agents/oracle.md` frontmatter — not configurable via this surface (an agent-file concern, not a hook concern).
 
 ### Portability floor
 
-- `MIN_PYTHON = (3, 9)` declared in code; `main()` exits 0 silently below the floor. Source syntax stays parseable by older interpreters so the guard is actually reached.
+- `MIN_PYTHON = (3, 9)` declared in code; `main()` is a silent exit-0 noop below the floor (stdin untouched). Source syntax stays parseable by older interpreters so the guard is actually reached; a test asserts no 3.10+ syntax (match/case) creeps in.
 - Transcripts read with `errors="replace"` — one bad byte in one line never kills detection for the turn.
 - Emitted JSON is ASCII-escaped (`json.dumps` default) — survives any console codepage.
-- Stdlib-only guarantee unchanged; Windows/macOS/Linux path handling via `os.path` only.
-- Enforced by `tests/test_config.py` (floor declaration, invalid-UTF-8 transcript, ASCII-safe output, source compiles).
+- Stdlib-only guarantee unchanged; config/state path handling via `pathlib`.
+- Enforced by `tests/test_config.py` (floor declaration + below-floor noop semantics, invalid-UTF-8 transcript, ASCII-safe output, source compiles, no-3.10-syntax).
