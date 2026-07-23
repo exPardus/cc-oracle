@@ -172,6 +172,15 @@ def test_state_path_accepts_marketplace_scoped_own_dir(monkeypatch, tmp_path):
     assert tmp_path / "oracle-claude-oracle" in p.parents
 
 
+def test_state_path_rejects_oracle_prefixed_foreign_plugin(monkeypatch, tmp_path):
+    # Open startswith("oracle-") prefix would accept an unrelated plugin whose
+    # name merely begins with ours. The allowlist must be exact known forms.
+    foreign = tmp_path / "oracle-db-tools"
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(foreign))
+    p = Path(_state_path("some-session"))
+    assert foreign not in p.parents
+
+
 def test_interrupted_state_write_preserves_previous_record(monkeypatch, tmp_path):
     # A crash mid-write must not clobber the existing record — a truncated
     # state file would let the same prompt be blocked twice.
