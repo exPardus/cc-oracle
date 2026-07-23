@@ -51,32 +51,36 @@ MARKERS = (
 )
 
 # First-person subject fragments. Anchoring rule: the pronoun must sit
-# directly against the idiom's verb phrase — no free gap words, so "I think
-# the DFS hit a dead end" (third-party subject) cannot match, and negations
-# ("I am not out of ideas") break adjacency and are dropped by design.
+# against the idiom's verb phrase with at most an explicit NON-NEGATING
+# intensifier adverb between them ("I really have no idea why", "I'm
+# completely out of ideas"). The adverb slot is a closed allowlist — never
+# \w+ — so "not" keeps breaking adjacency ("I am not out of ideas") and
+# third-party subjects ("I think the DFS hit a dead end") still cannot match.
+_ADV = r"(?:really |completely |totally |honestly |just |simply |absolutely |genuinely )?"
 _FAMILY_PATTERNS = {
     "hit a brick wall":
-        r"\b(?:i|we)(?:'ve| have)? (?:hit|kept hitting) (?:a |the )?brick wall\b"
-        r"|\b(?:i'm|i am|we're|we are) hitting (?:a |the )?brick wall\b"
-        r"|\b(?:i|we) keep hitting (?:a |the )?brick wall\b",
+        r"\b(?:i|we)(?:'ve| have)? " + _ADV + r"(?:hit|kept hitting) (?:a |the )?brick wall\b"
+        r"|\b(?:i'm|i am|we're|we are) " + _ADV + r"hitting (?:a |the )?brick wall\b"
+        r"|\b(?:i|we) " + _ADV + r"keep hitting (?:a |the )?brick wall\b",
     "at a dead end":
-        r"\b(?:i'm|i am|we're|we are) at a dead end\b"
-        r"|\b(?:i|we)(?:'ve| have)? (?:hit|reached) a dead end\b",
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"at a dead end\b"
+        r"|\b(?:i|we)(?:'ve| have)? " + _ADV + r"(?:hit|reached) a dead end\b",
     "i'm stumped":
-        r"\b(?:i'm|i am|we're|we are) stumped\b",
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"stumped\b",
     "i'm at a loss":
-        r"\b(?:i'm|i am|we're|we are) at a loss\b",
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"at a loss\b",
     "out of ideas":
-        r"\b(?:i'm|i am|we're|we are) (?:running )?out of ideas\b",
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"(?:running )?out of ideas\b"
+        r"|\b(?:i've|we've|i|we) " + _ADV + r"(?:run|ran) out of ideas\b",
     "going in circles":
-        r"\b(?:i'm|i am|we're|we are) going (?:around |round )?in circles\b"
-        r"|\b(?:i|we) keep going (?:around |round )?in circles\b"
-        r"|\b(?:i|we)(?:'ve| have) been going (?:around |round )?in circles\b",
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"going (?:around |round )?in circles\b"
+        r"|\b(?:i|we) " + _ADV + r"keep going (?:around |round )?in circles\b"
+        r"|\b(?:i|we)(?:'ve| have) " + _ADV + r"been going (?:around |round )?in circles\b",
     "can't work out":
-        r"\b(?:i|we) (?:can't|cannot|can not) work out\b",
+        r"\b(?:i|we) " + _ADV + r"(?:can't|cannot|can not) " + _ADV + r"work out\b",
     "no idea how":
-        r"\b(?:i|we) have no idea (?:how|why)\b"
-        r"|\b(?:i've|we've) (?:got )?no idea (?:how|why)\b",
+        r"\b(?:i|we) " + _ADV + r"have " + _ADV + r"no idea (?:how|why)\b"
+        r"|\b(?:i've|we've) " + _ADV + r"(?:got )?no idea (?:how|why)\b",
 }
 _FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 
