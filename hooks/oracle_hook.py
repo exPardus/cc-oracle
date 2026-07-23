@@ -78,9 +78,11 @@ _FAMILY_PATTERNS = {
         r"|\b(?:i|we)(?:'ve| have) " + _ADV + r"been going (?:around |round )?in circles\b",
     "can't work out":
         r"\b(?:i|we) " + _ADV + r"(?:can't|cannot|can not) " + _ADV + r"work out\b",
+    # "how long/many/much/big/often" is a hedge about an unknown quantity,
+    # not stuckness — excluded via lookahead.
     "no idea how":
-        r"\b(?:i|we) " + _ADV + r"have " + _ADV + r"no idea (?:how|why)\b"
-        r"|\b(?:i've|we've) " + _ADV + r"(?:got )?no idea (?:how|why)\b",
+        r"\b(?:i|we) " + _ADV + r"have " + _ADV + r"no idea (?:how(?! long| many| much| big| often)|why)\b"
+        r"|\b(?:i've|we've) " + _ADV + r"(?:got )?no idea (?:how(?! long| many| much| big| often)|why)\b",
 }
 _FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 

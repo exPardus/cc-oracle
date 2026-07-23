@@ -163,6 +163,19 @@ def test_negation_still_breaks_adjacency(text):
     assert not should_nudge(text)
 
 
+# "no idea how <duration/quantity>" is a benign hedge about an unknown
+# quantity, not stuckness on the task (re-review repro).
+@pytest.mark.parametrize("text", [
+    "I have no idea how long the full build takes on CI, so I set the timeout to 60 minutes. Done.",
+    "I have no idea how many rows the table holds in prod, so the migration batches by 1000. Shipped.",
+    "I have no idea how much memory the worker peaks at, so I set a conservative limit. Done.",
+    "I have no idea how big the upload can get, so the handler streams to disk. Done.",
+    "I have no idea how often the cron fires in staging, so I added idempotency. Done.",
+])
+def test_no_idea_quantity_hedges_do_not_fire(text):
+    assert not should_nudge(text)
+
+
 @pytest.mark.parametrize("text", [
     "We built a brick wall texture for the level. Done.",
     "The street is a dead end; the depot sits at its end. Route mapped.",
