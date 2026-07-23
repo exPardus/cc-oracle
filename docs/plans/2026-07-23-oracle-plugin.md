@@ -895,7 +895,7 @@ git commit -m "feat: oracle agent - read-only best-model consultant"
 **Interfaces:**
 - Consumes: everything prior; install instructions must match `.claude-plugin/marketplace.json` (marketplace name `claude-oracle`, plugin name `oracle`) and report §8 syntax.
 
-- [ ] **Step 1: Write `README.md`** covering, in this order (install syntax from report §8 — GitHub repo `Techn0Ninja27/claude-oracle`):
+- [x] **Step 1: Write `README.md`** covering, in this order (install syntax from report §8 — GitHub repo `Techn0Ninja27/claude-oracle`):
   - Title + one-line pitch: weaker (or any) model consults a best-model read-only oracle when unsure, instead of flailing solo — fewer wasted tokens, better code.
   - **How it works** — 3 bullets: doctrine (SessionStart additionalContext), oracle agent (fable alias, read-only Read/Grep/Glob, full-brief contract), Stop-hook safety net (conservative markers; question-to-user, quoted/fenced-text, and user-text suppression; per-turn guard; fail-open).
   - **Install** — `/plugin marketplace add Techn0Ninja27/claude-oracle` then `/plugin install oracle@claude-oracle`; CLI variant `claude plugin install oracle@claude-oracle`; local-directory variant `/plugin marketplace add ./claude-oracle`.
@@ -908,9 +908,9 @@ git commit -m "feat: oracle agent - read-only best-model consultant"
   - **License** — MIT.
   Keep it tight and professional — no marketing fluff, no emoji walls. This is the public face of the repo. IMPORTANT: when quoting the marker list or uncertainty phrases in the README, keep them inside backticks or quotes (they will then be exempt from the hook's own matching — dogfooding the quoted-text rule).
 
-- [ ] **Step 2: Verify all commands/paths in README against the actual repo** (manifest names, file paths, pytest command).
+- [x] **Step 2: Verify all commands/paths in README against the actual repo** (manifest names, file paths, pytest command).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add README.md
