@@ -1,7 +1,7 @@
 # Oracle Plugin — Design Spec
 
 **Date:** 2026-07-23
-**Status:** Approved design, pre-implementation
+**Status:** Implemented and tested (see `docs/plans/2026-07-23-oracle-plugin.md` for build record + smoke results)
 **Repo:** `C:\proga\claude-oracle` (standalone Claude Code plugin)
 
 ## Problem
