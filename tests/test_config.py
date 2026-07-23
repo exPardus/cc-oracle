@@ -340,13 +340,67 @@ def test_hook_source_utf8_and_compiles():
     compile(src, str(path), "exec")
 
 
-def test_hook_source_has_no_310_syntax():
-    # Guard against 3.10+ syntax creeping in (match/case, PEP 604 unions in
-    # annotations, parenthesized context managers are the usual suspects).
+def _py310_violations(src):
+    """Best-effort detector for 3.10+-only constructs in hook source.
+
+    Layered: (1) reparse with the 3.9 grammar (rejects match/case,
+    parenthesized context managers, and other new syntax the tokenizer
+    knows about); (2) AST walk denying Match nodes and PEP 604 ``X | Y``
+    unions inside annotations; (3) substring deny-list of 3.10+-only
+    stdlib calls that parse fine on any version.
+    """
     import ast
+    violations = []
+    try:
+        ast.parse(src, feature_version=(3, 9))
+    except SyntaxError as e:
+        violations.append(f"not 3.9-parseable: {e.msg}")
+    tree = ast.parse(src)
+    annotation_roots = []
+    for node in ast.walk(tree):
+        if type(node).__name__ in ("Match", "MatchCase"):
+            violations.append("match statement")
+        ann = getattr(node, "annotation", None)
+        if ann is not None:
+            annotation_roots.append(ann)
+        if type(node).__name__ in ("FunctionDef", "AsyncFunctionDef") and node.returns is not None:
+            annotation_roots.append(node.returns)
+    for ann in annotation_roots:
+        for sub in ast.walk(ann):
+            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr):
+                violations.append("PEP 604 union in annotation")
+    for needle in ("itertools.pairwise", "pairwise(", "aiter(", "anext(", "bit_count(", "strict=True)"):
+        if needle in src:
+            violations.append(f"3.10+ stdlib usage: {needle}")
+    # Parenthesized context managers: ast.parse(feature_version=(3, 9)) is
+    # documented best-effort and accepts them, so catch them textually.
+    # Heuristic: "with (" followed (possibly across lines) by an "as NAME,"
+    # binding — i.e. multiple managers inside the paren group. May over-flag
+    # exotic-but-legal 3.9 forms; fine for linting our own single source file.
+    import re as _re
+    if _re.search(r"\bwith\s*\(.*?\bas\s+\w+\s*,", src, _re.DOTALL):
+        violations.append("parenthesized context managers")
+    return violations
+
+
+def test_hook_source_has_no_310_syntax():
     path = Path(__file__).resolve().parent.parent / "hooks" / "oracle_hook.py"
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    assert not any(type(n).__name__ in ("Match", "MatchCase") for n in ast.walk(tree))
+    assert _py310_violations(path.read_text(encoding="utf-8")) == []
+
+
+def test_py310_detector_catches_known_constructs():
+    # The detector itself must actually flag the constructs it claims to —
+    # otherwise the floor test is a no-op rubber stamp.
+    assert _py310_violations("match x:\n    case 1:\n        pass\n")
+    assert _py310_violations("def f(a: int | None):\n    pass\n")
+    assert _py310_violations("def f() -> int | None:\n    pass\n")
+    assert _py310_violations("import itertools\nitertools.pairwise([])\n")
+    assert _py310_violations("list(zip(a, b, strict=True))\n")
+    assert _py310_violations(
+        "with (open('a') as f,\n      open('b') as g):\n    pass\n"
+    )
+    # and it must pass clean 3.9 code
+    assert _py310_violations("def f(a):\n    return a or None\n") == []
 
 
 def test_stop_output_is_ascii_safe(monkeypatch, tmp_path):
