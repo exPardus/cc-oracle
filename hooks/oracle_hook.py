@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from pathlib import Path
 
 # Portability floor: everything below this version gets a graceful no-op,
 # never a traceback in the user's session. Source syntax must stay parseable
@@ -32,31 +33,50 @@ MARKERS = (
     "unsure how to proceed",
 )
 
-# Configuration surface (v1.1). Precedence: defaults < user < project.
-# Any malformed layer or key is ignored — config can only tune behavior,
-# never break it.
-DEFAULTS = {"stop_hook": True, "doctrine": True, "markers_add": (), "markers_remove": ()}
-CONFIG_RELPATH = os.path.join(".claude", "oracle.json")
+# Configuration surface (v1.1). Plugin-local: one optional file at
+# <CLAUDE_PLUGIN_DATA or OS temp>/oracle-state/config.json — the same
+# base-dir resolution as the per-turn state, so the location is
+# environment-independent (no cwd, no HOME). Every default reproduces v1
+# behavior exactly; a malformed file or wrong-typed key is ignored —
+# config can only tune behavior, never break it.
+DEFAULTS = {
+    "stop_hook": True,
+    "doctrine": True,
+    "markers_add": (),
+    "markers_remove": (),
+    "state_dir": None,
+}
 KILL_SWITCH_ENV = "CC_ORACLE_DISABLE"
+
+
+def _oracle_data_dir():
+    base = os.environ.get("CLAUDE_PLUGIN_DATA") or tempfile.gettempdir()
+    return Path(base) / "oracle-state"
+
+
+def _config_path():
+    return str(_oracle_data_dir() / "config.json")
 
 
 def _normalize_marker(m):
     return re.sub(r"\s+", " ", m.strip().lower())
 
 
-def _read_config_file(path):
-    """One config layer as a partial dict; {} on any malformation (fail open)."""
+def load_config():
+    """Effective config: DEFAULTS overlaid with the well-typed keys of
+    config.json. Anything malformed is silently dropped (fail open)."""
+    cfg = dict(DEFAULTS)
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
+        raw = json.loads(Path(_config_path()).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return cfg
     if not isinstance(raw, dict):
-        return {}
-    out = {}
+        return cfg
     for key in ("stop_hook", "doctrine"):
         if isinstance(raw.get(key), bool):
-            out[key] = raw[key]
+            cfg[key] = raw[key]
+    if isinstance(raw.get("state_dir"), str) and raw["state_dir"].strip():
+        cfg["state_dir"] = raw["state_dir"]
     markers = raw.get("markers")
     if isinstance(markers, dict):
         for key, dest in (("add", "markers_add"), ("remove", "markers_remove")):
@@ -64,18 +84,7 @@ def _read_config_file(path):
             if isinstance(val, list):
                 cleaned = tuple(_normalize_marker(v) for v in val if isinstance(v, str) and v.strip())
                 if cleaned:
-                    out[dest] = cleaned
-    return out
-
-
-def load_config(cwd):
-    cfg = dict(DEFAULTS)
-    layers = [os.path.join(os.path.expanduser("~"), CONFIG_RELPATH)]
-    if cwd and isinstance(cwd, str):
-        layers.append(os.path.join(cwd, CONFIG_RELPATH))
-    for path in layers:
-        for key, val in _read_config_file(path).items():
-            cfg[key] = val
+                    cfg[dest] = cleaned
     return cfg
 
 
@@ -238,25 +247,25 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 </oracle-plugin>"""
 
 
-def _state_path(session_id):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or tempfile.gettempdir()
-    state_dir = os.path.join(base, "oracle-state")
-    os.makedirs(state_dir, exist_ok=True)
+def _state_path(session_id, cfg=None):
+    override = (cfg or {}).get("state_dir")
+    state_dir = Path(override) if override else _oracle_data_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
     safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
-    return os.path.join(state_dir, safe + ".json")
+    return str(state_dir / (safe + ".json"))
 
 
-def _already_blocked(session_id, prompt_id):
+def _already_blocked(session_id, prompt_id, cfg=None):
     try:
-        with open(_state_path(session_id), encoding="utf-8") as f:
+        with open(_state_path(session_id, cfg), encoding="utf-8") as f:
             return json.load(f).get("blocked_prompt") == prompt_id
     except (OSError, ValueError):
         return False
 
 
-def _record_block(session_id, prompt_id):
+def _record_block(session_id, prompt_id, cfg=None):
     try:
-        with open(_state_path(session_id), "w", encoding="utf-8") as f:
+        with open(_state_path(session_id, cfg), "w", encoding="utf-8") as f:
             json.dump({"blocked_prompt": prompt_id}, f)
     except OSError:
         pass
@@ -272,7 +281,7 @@ def run_stop(stdin_text):
             return 0, ""
         if payload.get("stop_hook_active") is True:
             return 0, ""
-        cfg = load_config(payload.get("cwd"))
+        cfg = load_config()
         if cfg["stop_hook"] is not True:
             return 0, ""
         transcript_path = payload.get("transcript_path")
@@ -287,10 +296,10 @@ def run_stop(stdin_text):
             return 0, ""
         session_id = payload.get("session_id", "unknown")
         prompt_id = payload.get("prompt_id") or ""
-        if prompt_id and _already_blocked(session_id, prompt_id):
+        if prompt_id and _already_blocked(session_id, prompt_id, cfg):
             return 0, ""
         if prompt_id:
-            _record_block(session_id, prompt_id)
+            _record_block(session_id, prompt_id, cfg)
         return 0, json.dumps({"decision": "block", "reason": NUDGE})
     except Exception:
         return 0, ""
@@ -299,18 +308,12 @@ def run_stop(stdin_text):
 def run_session_start(stdin_text=""):
     """Failure posture is the inverse of run_stop's: config trouble means the
     doctrine IS injected (the default behavior) — only an explicit, well-formed
-    opt-out silences it."""
+    opt-out silences it. stdin payload is accepted but unused (config location
+    is environment-independent)."""
     if _disabled_by_env():
         return 0, ""
-    cwd = None
     try:
-        payload = json.loads(stdin_text)
-        if isinstance(payload, dict):
-            cwd = payload.get("cwd")
-    except ValueError:
-        pass
-    try:
-        if load_config(cwd)["doctrine"] is False:
+        if load_config()["doctrine"] is False:
             return 0, ""
     except Exception:
         pass
