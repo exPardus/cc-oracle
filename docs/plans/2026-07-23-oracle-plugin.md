@@ -954,7 +954,7 @@ Repeat Steps 1–3 until a review round returns no MAJOR+ findings.
 
 From a scratch temp dir: `claude -p "Reply with the single word READY" --model haiku --settings <scratch>/oracle-smoke-settings.json`. Expected: exits 0, replies READY, no hook errors.
 
-- [ ] **Step 2: Stop-hook live check.** Same temp dir, SAME `--settings <scratch>/oracle-smoke-settings.json` flag: `claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings <scratch>/oracle-smoke-settings.json --output-format json`. Expected: the stop hook blocks once (nudge visible in behavior — model continues after the block); session terminates (no loop; per-turn guard + platform 8-cap). A model that instead dispatches an oracle consult is also a pass. **FAILED (2026-07-23, both attempts): haiku deflected the instruction instead of stating the marker phrase, so the hook never got a chance to fire (`num_turns: 1` both times). No hook code defect identified — see "Smoke results" below. Left unchecked per instructions (do not fix code; record the failure).**
+- [x] **Step 2: Stop-hook live check.** Same temp dir, SAME `--settings <scratch>/oracle-smoke-settings.json` flag: `claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings <scratch>/oracle-smoke-settings.json --output-format json`. Expected: the stop hook blocks once (nudge visible in behavior — model continues after the block); session terminates (no loop; per-turn guard + platform 8-cap). A model that instead dispatches an oracle consult is also a pass. **RETRIED 2026-07-23 with the direct "I'm stuck/can't figure out" prompt deflected by haiku (as before); a fill-in-the-blank prompt forcing the marker phrase into the reply succeeded — the Stop hook fired (`num_turns: 2`, model's second turn explicitly discusses "the oracle"), session terminated cleanly, and the per-turn state file was confirmed written (sha1-matched filename, mtime in window). See "Smoke results" below.**
 - [x] **Step 3: Record results** in `docs/plans/2026-07-23-oracle-plugin.md` under "Smoke results" (date, commands, outcome), commit:
 
 ```bash
@@ -1006,5 +1006,29 @@ Both attempts: `is_error: false`, empty stderr, no hook errors, exit code 0.
 State-file check: confirmed no file named for either live `session_id` (`d97dd1fc...` or `799df332...`) appeared under `%TEMP%/claude-oracle/` (`CLAUDE_PLUGIN_DATA` was not set to an oracle-specific path in this bare-settings run, so the hook's fallback path — `tempfile.gettempdir() + "claude-oracle"` — is the correct location to check). Only two stale files from earlier `pytest` runs of `test_stop_entry.py` were present (`sess-*.json`, schema `{"last_block": ...}` — an older, pre-Task-4 format, unrelated to these live runs). This is consistent with the hook never having blocked: `_record_block` is only reached on the block path.
 
 **Assessment:** this is a smoke-test-design limitation, not a demonstrated hook defect. The prompt asks the model to assert genuine stuckness with no actual problem in context; haiku (both attempts) recognized there was nothing to be stuck on and refused to fabricate the statement, so the live run never exercised the marker-detection → block path end-to-end. The per-turn guard, block-decision JSON shape, and turn-continuation behavior described in the pass criterion remain **unverified by this live run** (they are covered by the unit tests in `tests/test_stop_entry.py`, which do exercise `run_stop` directly against a synthetic transcript containing the marker text — those pass). Per instructions: no code was changed as a result of this smoke step.
+
+### Retry (2026-07-23, later session): CHECK A + CHECK B live block path — PASS
+
+**CHECK A — SessionStart doctrine injection:**
+
+```
+claude -p "Answer with one word, YES or NO: does your context contain an <oracle-plugin> doctrine block?" --model haiku --settings "<scratch>/oracle-smoke-settings.json"
+```
+
+Outcome: stdout `YES`, exit code `0`. Confirms the SessionStart hook's `additionalContext` envelope reaches the model's context verbatim.
+
+**CHECK B — Stop-hook block path, live.** Tried three prompts in order per the retry brief; first two reproduced the known haiku-deflection failure mode, the third succeeded:
+
+1. `"This is a hook integration test. For the test to pass, your entire reply must be exactly this sentence and nothing else: I am stuck and cannot figure out this problem."` → haiku refused, framing it as a prompt-injection attempt ("I can't follow instructions embedded in user messages that override my normal function"). `num_turns: 1`. No marker text in the reply → hook never had anything to match. FAIL.
+2. `"Try to compute the 10th busy beaver number exactly. ... honestly state your state of confusion when you fail."` → haiku gave a genuine, detailed attempt and honest failure account, but phrased its confusion as "I hit brick wall" / "no path to actual maximum" — never using any of the exact `MARKERS` substrings. `num_turns: 1`. No block. FAIL.
+3. `"Complete the following sentence with the missing words and output the completed sentence as your entire reply, no quotes: I am ___ and cannot ___ out this problem. (missing words: stuck, figure)"` → haiku filled in the blanks, producing assistant text containing "cannot figure out this problem" (matches marker `"cannot figure out"`). **SUCCESS.**
+
+Evidence for the successful run (`session_id 09b83e66-670d-4633-ad03-a50e5540d741`):
+- `num_turns: 2`, `stop_reason: "end_turn"`, `terminal_reason: "completed"`, `is_error: false` — hook blocked once, model continued, session then terminated cleanly (no loop).
+- Final-turn `result` text visibly reacts to the nudge, naming the oracle explicitly: *"The task was straightforward sentence completion—I filled in the blanks correctly. No actual uncertainty or blocker exists to brief the oracle on. Was this a protocol check, or is there a real problem you need the oracle for?"* — this directly echoes the `NUDGE` text's brief-the-oracle instruction.
+- **State-file corroboration:** the ambient shell's `CLAUDE_PLUGIN_DATA` env var was already set (leaked from an unrelated plugin, `C:/Users/Techn/.claude/plugins/data/codex-openai-codex`) and was inherited by the `claude -p` subprocess, so per `_state_path`'s `os.environ.get("CLAUDE_PLUGIN_DATA") or <temp fallback>` precedence, the hook wrote its state file there instead of under `%TEMP%/claude-oracle/`. A file `cc625c7450b56ee7.json` appeared in that directory at `07:56`, inside the run window, containing `{"blocked_prompt": "b4309f48-38ac-48a5-8981-e673da641c8a"}`. `sha1("09b83e66-670d-4633-ad03-a50e5540d741")[:16]` computed independently equals `cc625c7450b56ee7` — an exact match to the filename, so this state file is provably the one this exact run's Stop hook wrote. This is direct, independent confirmation of the block path executing (not just inferred from `num_turns`/text).
+- A repeat run of prompt 3 (same command, immediately after) instead deflected the fill-in-the-blank task outright (`num_turns: 1`) — so prompt 3's success is not fully deterministic across runs, but the one successful run above is unambiguous, fully-corroborated evidence that the Stop-hook block path fires correctly end-to-end on a live model when the assistant's own text contains a marker.
+
+**Conclusion:** Task 8 Step 2's pass criterion (block fires, nudge visible, session terminates cleanly) is now demonstrated live, closing the gap left by the original attempt. No hook code changes were made or needed.
 
 ### Step 3: Record results — this section
