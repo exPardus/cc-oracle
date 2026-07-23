@@ -836,7 +836,7 @@ git commit -m "feat: stop-hook safety net + session-start doctrine, wired via ho
 **Interfaces:**
 - Consumes: plugin name `oracle` (Task 1); doctrine brief fields (Task 4) — the agent prompt's brief contract must use the SAME five field names: Goal, Problem, Tried, Context, Question.
 
-- [ ] **Step 1: Write `agents/oracle.md`.** Baseline below; refine the body per the research report's prompt-engineering guidance (§5, §9: role definition, output format, description-writing for proactive delegation). Frontmatter constraints are hard: `model: fable` alias; tools `Read, Grep, Glob` ONLY — no Bash, no Edit, no Write (read-only is architectural, not prose).
+- [x] **Step 1: Write `agents/oracle.md`.** Baseline below; refine the body per the research report's prompt-engineering guidance (§5, §9: role definition, output format, description-writing for proactive delegation). Frontmatter constraints are hard: `model: fable` alias; tools `Read, Grep, Glob` ONLY — no Bash, no Edit, no Write (read-only is architectural, not prose).
 
 ```markdown
 ---
@@ -876,9 +876,9 @@ Respond with exactly these sections:
 Your final message is consumed by another model, not a human — no pleasantries, no restating the brief.
 ```
 
-- [ ] **Step 2: Sanity check** — confirm frontmatter parses (visually: `---` fences, valid YAML, no tabs) and that `model:` uses an alias, not an ID. Note (report §4): an unavailable model alias falls back to the inherited (caller's) model silently — no error reaches the caller. The doctrine's retry-on-error line covers actual dispatch *errors* only; the silent-downgrade caveat is documented in the README (Task 6), not here.
+- [x] **Step 2: Sanity check** — confirm frontmatter parses (visually: `---` fences, valid YAML, no tabs) and that `model:` uses an alias, not an ID. Note (report §4): an unavailable model alias falls back to the inherited (caller's) model silently — no error reaches the caller. The doctrine's retry-on-error line covers actual dispatch *errors* only; the silent-downgrade caveat is documented in the README (Task 6), not here.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add agents/oracle.md
