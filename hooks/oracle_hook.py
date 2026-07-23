@@ -189,8 +189,28 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 </oracle-plugin>"""
 
 
+# This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
+# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
+# child processes, so a foreign plugin's value can leak into our environment
+# (live incident: codex's data dir received our state file).
+_PLUGIN_NAME = "oracle"
+
+
+def _own_plugin_data():
+    env = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+    if not env:
+        return None
+    base_name = os.path.basename(os.path.normpath(env))
+    # Accept exactly our plugin name, or a harness-scoped form of it
+    # ("oracle-<marketplace>" / "oracle@<marketplace>"). Anything else is
+    # another plugin's dir — never write there.
+    if base_name == _PLUGIN_NAME or base_name.startswith((_PLUGIN_NAME + "-", _PLUGIN_NAME + "@")):
+        return env
+    return None
+
+
 def _state_path(session_id):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or tempfile.gettempdir()
+    base = _own_plugin_data() or tempfile.gettempdir()
     state_dir = os.path.join(base, "oracle-state")
     os.makedirs(state_dir, exist_ok=True)
     safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
