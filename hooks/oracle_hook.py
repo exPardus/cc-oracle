@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 
 # Conservative by design: a false positive (annoying block) is worse than a miss.
 # The instruction path is primary; this hook only catches forgetting.
@@ -25,6 +26,30 @@ MARKERS = (
     "i am confused",
     "not certain why",
     "unsure how to proceed",
+    # Deflection variant families: live smoke showed models phrase stuckness
+    # in idioms the core list never matched ("hit brick wall" — plan retry
+    # section). Each variant is anchored enough that mundane prose ("built a
+    # brick wall", "worked out fine", "workout") cannot contain it.
+    "hit a brick wall",
+    "hit the brick wall",
+    "hit brick wall",
+    "hitting a brick wall",
+    "hitting the brick wall",
+    "at a dead end",
+    "hit a dead end",
+    "reached a dead end",
+    "i'm stumped",
+    "i am stumped",
+    "i'm at a loss",
+    "i am at a loss",
+    "out of ideas",
+    "going in circles",
+    "going around in circles",
+    "going round in circles",
+    "can't work out",
+    "cannot work out",
+    "no idea how",
+    "no idea why",
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -81,9 +106,10 @@ def should_nudge(text):
 
 
 def load_entries(path):
+    # errors="replace": one stray invalid byte must not disable the hook.
     entries = []
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -92,7 +118,9 @@ def load_entries(path):
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if isinstance(obj, dict):
+                # Sidechain (subagent) entries share the transcript file; their
+                # text and tool_use are not the main thread's and never count.
+                if isinstance(obj, dict) and not obj.get("isSidechain"):
                     entries.append(obj)
     except OSError:
         return []
@@ -116,8 +144,12 @@ def last_assistant_text(entries):
     for entry in reversed(entries):
         if entry.get("type") != "assistant":
             continue
-        texts = [b.get("text", "") for b in _content_blocks(entry) if b.get("type") == "text"]
-        joined = "\n".join(t for t in texts if t).strip()
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            joined = content.strip()
+        else:
+            texts = [b.get("text", "") for b in _content_blocks(entry) if b.get("type") == "text"]
+            joined = "\n".join(t for t in texts if t).strip()
         if joined:
             return joined
     return ""
@@ -142,16 +174,24 @@ def _is_oracle_subagent(name):
     return name == "oracle" or name.endswith(":oracle")
 
 
-def oracle_consulted_this_turn(entries):
+def _turn_start(entries):
     start = 0
     for i, entry in enumerate(entries):
         if _is_real_user_prompt(entry):
             start = i
-    for entry in entries[start:]:
+    return start
+
+
+# Subagent dispatch tool is named "Task" in older harnesses, "Agent" in newer.
+_DISPATCH_TOOLS = ("Task", "Agent")
+
+
+def oracle_consulted_this_turn(entries):
+    for entry in entries[_turn_start(entries):]:
         if entry.get("type") != "assistant":
             continue
         for b in _content_blocks(entry):
-            if b.get("type") == "tool_use" and b.get("name") == "Task":
+            if b.get("type") == "tool_use" and b.get("name") in _DISPATCH_TOOLS:
                 subagent = str((b.get("input") or {}).get("subagent_type", "")).lower()
                 if _is_oracle_subagent(subagent):
                     return True
@@ -173,8 +213,28 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 </oracle-plugin>"""
 
 
+# This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
+# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
+# child processes, so a foreign plugin's value can leak into our environment
+# (live incident: codex's data dir received our state file).
+_PLUGIN_NAME = "oracle"
+
+
+def _own_plugin_data():
+    env = os.environ.get("CLAUDE_PLUGIN_DATA", "")
+    if not env:
+        return None
+    base_name = os.path.basename(os.path.normpath(env))
+    # Accept exactly our plugin name, or a harness-scoped form of it
+    # ("oracle-<marketplace>" / "oracle@<marketplace>"). Anything else is
+    # another plugin's dir — never write there.
+    if base_name == _PLUGIN_NAME or base_name.startswith((_PLUGIN_NAME + "-", _PLUGIN_NAME + "@")):
+        return env
+    return None
+
+
 def _state_path(session_id):
-    base = os.environ.get("CLAUDE_PLUGIN_DATA") or tempfile.gettempdir()
+    base = _own_plugin_data() or tempfile.gettempdir()
     state_dir = os.path.join(base, "oracle-state")
     os.makedirs(state_dir, exist_ok=True)
     safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
@@ -189,18 +249,52 @@ def _already_blocked(session_id, prompt_id):
         return False
 
 
-def _record_block(session_id, prompt_id):
+# Sessions older than this have long ended; their state files are dead weight.
+_STATE_TTL_SECONDS = 30 * 86400
+
+
+def _prune_stale_state(state_dir):
     try:
-        with open(_state_path(session_id), "w", encoding="utf-8") as f:
-            json.dump({"blocked_prompt": prompt_id}, f)
+        cutoff = time.time() - _STATE_TTL_SECONDS
+        for name in os.listdir(state_dir):
+            p = os.path.join(state_dir, name)
+            try:
+                if os.path.getmtime(p) < cutoff:
+                    os.remove(p)
+            except OSError:
+                pass
     except OSError:
         pass
+
+
+def _record_block(session_id, prompt_id):
+    # Write-to-temp + os.replace: a crash mid-write must never truncate an
+    # existing record (a truncated file would allow a double block).
+    tmp = None
+    try:
+        path = _state_path(session_id)
+        state_dir = os.path.dirname(path)
+        _prune_stale_state(state_dir)
+        fd, tmp = tempfile.mkstemp(dir=state_dir, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"blocked_prompt": prompt_id}, f)
+        os.replace(tmp, path)
+        tmp = None
+    except OSError:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
-        payload = json.loads(stdin_text)
+        # Windows pipes can prepend a UTF-8 BOM.
+        payload = json.loads(stdin_text.lstrip("﻿"))
         if not isinstance(payload, dict):
             return 0, ""
         if payload.get("stop_hook_active") is True:
@@ -211,6 +305,9 @@ def run_stop(stdin_text):
         entries = load_entries(transcript_path)
         if not entries:
             return 0, ""
+        # Scan the CURRENT turn only: a stuck statement from a previous turn
+        # was already stop-checked and must not retrigger.
+        entries = entries[_turn_start(entries):]
         if not should_nudge(last_assistant_text(entries)):
             return 0, ""
         if oracle_consulted_this_turn(entries):
@@ -237,16 +334,21 @@ def run_session_start():
 
 
 def main(argv):
-    mode = argv[1] if len(argv) > 1 else ""
-    if mode == "session-start":
-        code, out = run_session_start()
-    elif mode == "stop":
-        code, out = run_stop(sys.stdin.read())
-    else:
+    # Hook entry point: nothing may escape — an uncaught exception exits
+    # nonzero and surfaces noise (or worse) in the session.
+    try:
+        mode = argv[1] if len(argv) > 1 else ""
+        if mode == "session-start":
+            code, out = run_session_start()
+        elif mode == "stop":
+            code, out = run_stop(sys.stdin.read())
+        else:
+            return 0
+        if out:
+            sys.stdout.write(out)
+        return code
+    except Exception:
         return 0
-    if out:
-        sys.stdout.write(out)
-    return code
 
 
 if __name__ == "__main__":
