@@ -43,6 +43,46 @@ def test_cli_stop_blocks_then_waves_through(tmp_path):
     assert second.stdout == ""
 
 
+def test_cli_stop_new_prompt_id_eligible_again(tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "fix"}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "I am stuck. The mock never fires."}]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    session = f"smoke-{time.time_ns()}"
+    env = {"CLAUDE_PLUGIN_DATA": str(tmp_path / "oracle")}
+
+    def payload(prompt_id):
+        return json.dumps({
+            "session_id": session, "prompt_id": prompt_id,
+            "transcript_path": str(transcript), "stop_hook_active": False,
+        })
+
+    assert json.loads(_run("stop", payload("p-1"), env).stdout)["decision"] == "block"
+    assert _run("stop", payload("p-1"), env).stdout == ""
+    # new turn, same session: guard resets, eligible again
+    assert json.loads(_run("stop", payload("p-2"), env).stdout)["decision"] == "block"
+
+
+def test_cli_stop_hook_active_waves_through(tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    entries = [
+        {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "fix"}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "I am stuck. The mock never fires."}]}},
+    ]
+    transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    payload = json.dumps({
+        "session_id": f"smoke-{time.time_ns()}", "prompt_id": "p-1",
+        "transcript_path": str(transcript), "stop_hook_active": True,
+    })
+    r = _run("stop", payload, {"CLAUDE_PLUGIN_DATA": str(tmp_path / "oracle")})
+    assert r.returncode == 0
+    assert r.stdout == ""
+
+
 def test_cli_stop_garbage_stdin_exits_zero_silent():
     r = _run("stop", "\xff not json at all")
     assert r.returncode == 0
