@@ -936,8 +936,8 @@ Repeat Steps 1–3 until a review round returns no MAJOR+ findings.
 
 ### Task 8: Integration smoke test (live Claude Code)
 
-- [ ] **Step 0: Verify CLI flags.** Run `claude --help` and confirm `--settings` accepts a JSON file path (it is used by claude-fleet's worker spawning on this machine, so it exists; confirm syntax anyway). `--plugin-dir` is UNCONFIRMED in docs — do not rely on it.
-- [ ] **Step 1: SessionStart wiring smoke.** Write `<scratch>/oracle-smoke-settings.json` (forward slashes; same fallback chaining as hooks.json):
+- [x] **Step 0: Verify CLI flags.** Run `claude --help` and confirm `--settings` accepts a JSON file path (it is used by claude-fleet's worker spawning on this machine, so it exists; confirm syntax anyway). `--plugin-dir` is UNCONFIRMED in docs — do not rely on it.
+- [x] **Step 1: SessionStart wiring smoke.** Write `<scratch>/oracle-smoke-settings.json` (forward slashes; same fallback chaining as hooks.json):
 
 ```json
 {
@@ -954,8 +954,8 @@ Repeat Steps 1–3 until a review round returns no MAJOR+ findings.
 
 From a scratch temp dir: `claude -p "Reply with the single word READY" --model haiku --settings <scratch>/oracle-smoke-settings.json`. Expected: exits 0, replies READY, no hook errors.
 
-- [ ] **Step 2: Stop-hook live check.** Same temp dir, SAME `--settings <scratch>/oracle-smoke-settings.json` flag: `claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings <scratch>/oracle-smoke-settings.json --output-format json`. Expected: the stop hook blocks once (nudge visible in behavior — model continues after the block); session terminates (no loop; per-turn guard + platform 8-cap). A model that instead dispatches an oracle consult is also a pass.
-- [ ] **Step 3: Record results** in `docs/plans/2026-07-23-oracle-plugin.md` under "Smoke results" (date, commands, outcome), commit:
+- [ ] **Step 2: Stop-hook live check.** Same temp dir, SAME `--settings <scratch>/oracle-smoke-settings.json` flag: `claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings <scratch>/oracle-smoke-settings.json --output-format json`. Expected: the stop hook blocks once (nudge visible in behavior — model continues after the block); session terminates (no loop; per-turn guard + platform 8-cap). A model that instead dispatches an oracle consult is also a pass. **FAILED (2026-07-23, both attempts): haiku deflected the instruction instead of stating the marker phrase, so the hook never got a chance to fire (`num_turns: 1` both times). No hook code defect identified — see "Smoke results" below. Left unchecked per instructions (do not fix code; record the failure).**
+- [x] **Step 3: Record results** in `docs/plans/2026-07-23-oracle-plugin.md` under "Smoke results" (date, commands, outcome), commit:
 
 ```bash
 git add docs/plans/2026-07-23-oracle-plugin.md
@@ -966,4 +966,45 @@ git commit -m "test: record live integration smoke results"
 
 ## Smoke results
 
-(to be filled by Task 8)
+**Date:** 2026-07-23
+**Platform:** Windows, Git Bash (claude-fleet machine)
+**Scratch dir:** `C:/Users/Techn/AppData/Local/Temp/claude/C--proga-claude-fleet/64b6d1c9-5d5a-45af-af3f-84f8e5148656/scratchpad/oracle-smoke/`
+
+### Step 0: Verify CLI flags — PASS
+
+`claude --help` confirms `--settings <file-or-json>` exists ("Path to a settings JSON file or a JSON string to load additional settings from"). `--plugin-dir <path>` also exists in this build ("Load a plugin from a directory or .zip for this session only") but per the plan we do not rely on it — `--settings` is used for this smoke test as specified.
+
+### Step 1: SessionStart wiring smoke — PASS
+
+`oracle-smoke-settings.json` written verbatim from the plan (forward slashes, `python ... || python3 ...` fallback chaining) to the scratch dir above.
+
+Command (run from inside the scratch dir):
+
+```
+claude -p "Reply with the single word READY" --model haiku --settings "<scratch>/oracle-smoke-settings.json"
+```
+
+Outcome: stdout `READY`, exit code `0`, no hook errors, no stderr output. Matches expected.
+
+### Step 2: Stop-hook live check — FAIL (pass criterion not met; no hook code defect found)
+
+Command (same dir, same `--settings` flag):
+
+```
+claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings "<scratch>/oracle-smoke-settings.json" --output-format json
+```
+
+Run twice (identical command) to check reproducibility before recording as a failure. Both runs:
+
+- Attempt 1 (`session_id d97dd1fc-81b0-4747-a354-8b79c60917ee`): `num_turns: 1`, `stop_reason: "end_turn"`, `result: "No problem stated. Need context to actually work on something."`
+- Attempt 2 (`session_id 799df332-bff8-4e3b-830e-edaf7a01fe70`): `num_turns: 1`, `stop_reason: "end_turn"`, `result: "No problem stated, so can't declare stuck on nothing. What do you need help with?"`
+
+Both attempts: `is_error: false`, empty stderr, no hook errors, exit code 0.
+
+**Verbatim failure:** in both attempts the haiku model declined to comply with the instruction — instead of stating "I'm stuck and cannot figure out this problem" in its own words, it deflected because no real problem/context was given in the prompt. Since the assistant's final text never contained an uncertainty marker, `should_nudge()` never matched, the Stop hook's `run_stop` returned `(0, "")` (silent/no-op) both times, and `num_turns` stayed at 1 — i.e. the hook never got a chance to block. This reproduced identically across both attempts, so it is not a one-off flake.
+
+State-file check: confirmed no file named for either live `session_id` (`d97dd1fc...` or `799df332...`) appeared under `%TEMP%/claude-oracle/` (`CLAUDE_PLUGIN_DATA` was not set to an oracle-specific path in this bare-settings run, so the hook's fallback path — `tempfile.gettempdir() + "claude-oracle"` — is the correct location to check). Only two stale files from earlier `pytest` runs of `test_stop_entry.py` were present (`sess-*.json`, schema `{"last_block": ...}` — an older, pre-Task-4 format, unrelated to these live runs). This is consistent with the hook never having blocked: `_record_block` is only reached on the block path.
+
+**Assessment:** this is a smoke-test-design limitation, not a demonstrated hook defect. The prompt asks the model to assert genuine stuckness with no actual problem in context; haiku (both attempts) recognized there was nothing to be stuck on and refused to fabricate the statement, so the live run never exercised the marker-detection → block path end-to-end. The per-turn guard, block-decision JSON shape, and turn-continuation behavior described in the pass criterion remain **unverified by this live run** (they are covered by the unit tests in `tests/test_stop_entry.py`, which do exercise `run_stop` directly against a synthetic transcript containing the marker text — those pass). Per instructions: no code was changed as a result of this smoke step.
+
+### Step 3: Record results — this section
