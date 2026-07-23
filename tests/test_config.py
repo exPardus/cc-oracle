@@ -225,6 +225,40 @@ def test_state_dir_knob_relocates_state_files(monkeypatch, tmp_path):
     assert run_stop(payload) == (0, "")
 
 
+def test_prune_only_touches_own_state_files(monkeypatch, tmp_path):
+    # CRIT: with the user-facing state_dir knob the resolved dir can be a
+    # user's own folder (e.g. Documents). The age-based sweep must only ever
+    # delete files WE created — 16-hex .json state records and our mkstemp
+    # .tmp leftovers — never arbitrary user files, whatever their age.
+    import os as _os
+    import time as _time
+    from oracle_hook import _record_block
+    _isolate(monkeypatch, tmp_path)
+    custom = tmp_path / "documents"
+    custom.mkdir()
+    _write_config(tmp_path, {"state_dir": str(custom)})
+
+    precious = custom / "thesis-final.docx"
+    precious.write_text("years of work", encoding="utf-8")
+    foreign_json = custom / "notes.json"          # .json but not our name shape
+    foreign_json.write_text("{}", encoding="utf-8")
+    stale_state = custom / ("a" * 16 + ".json")   # ours: 16-hex state record
+    stale_state.write_text('{"blocked_prompt": "old"}', encoding="utf-8")
+    stale_tmp = custom / "tmp1a2b3c.tmp"          # ours: mkstemp leftover
+    stale_tmp.write_text("", encoding="utf-8")
+
+    stale = _time.time() - 45 * 86400
+    for f in (precious, foreign_json, stale_state, stale_tmp):
+        _os.utime(f, (stale, stale))
+
+    _record_block(_fresh_session(), "p-1", load_config())  # triggers sweep in custom dir
+
+    assert precious.exists()
+    assert foreign_json.exists()
+    assert not stale_state.exists()
+    assert not stale_tmp.exists()
+
+
 def test_state_path_default_unchanged_from_v1(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     p = Path(_state_path("some-session"))

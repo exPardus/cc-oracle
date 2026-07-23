@@ -327,14 +327,23 @@ def _already_blocked(session_id, prompt_id, cfg=None):
 # Sessions older than this have long ended; their state files are dead weight.
 _STATE_TTL_SECONDS = 30 * 86400
 
+# The state_dir knob can point the sweep at a user's own folder, so deletion
+# is allowlisted to the exact shapes WE create: 16-hex sha1-prefix state
+# records and mkstemp ".tmp" leftovers. Anything else is never touched.
+_STATE_FILE_RE = re.compile(r"^[0-9a-f]{16}\.json$")
+_TMP_FILE_RE = re.compile(r"^tmp[A-Za-z0-9_]*\.tmp$")
+
 
 def _prune_stale_state(state_dir):
     try:
         cutoff = time.time() - _STATE_TTL_SECONDS
         for name in os.listdir(state_dir):
             # config.json lives in the same dir and is long-lived by design —
-            # never prune it, no matter how old.
+            # never prune it, no matter how old (belt-and-braces: its name
+            # does not match the allowlist anyway).
             if name == "config.json":
+                continue
+            if not (_STATE_FILE_RE.match(name) or _TMP_FILE_RE.match(name)):
                 continue
             p = os.path.join(state_dir, name)
             try:
