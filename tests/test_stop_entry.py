@@ -1,11 +1,12 @@
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-from oracle_hook import run_stop, run_session_start, DOCTRINE, _state_path
+from oracle_hook import run_stop, run_session_start, DOCTRINE, _state_path, _record_block, _already_blocked
 
 
 def _write_transcript(tmp_path, entries):
@@ -108,6 +109,21 @@ def test_turn_guard_blocks_once_per_prompt(tmp_path, monkeypatch):
     assert json.loads(out2)["decision"] == "block"
 
 
+def test_stale_marker_from_previous_turn_does_not_block(tmp_path, monkeypatch):
+    # Only the CURRENT turn's assistant text may be scanned: a stuck statement
+    # from an earlier turn must not trigger a block when the final turn ends
+    # without text (e.g. tool_use only).
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [
+        _user_prompt("first ask"),
+        _assistant_text("I'm stuck. No idea."),
+        _user_prompt("second ask"),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}},
+    ]
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
 def test_session_start_emits_additional_context_envelope():
     code, out = run_session_start()
     assert code == 0
@@ -130,6 +146,50 @@ def test_state_dir_is_namespaced_under_plugin_data(monkeypatch, tmp_path):
     p = _state_path("some-session")
     assert Path(p).parent.name == "oracle-state"
     assert Path(p).parent.parent == tmp_path / "data"
+
+
+def test_interrupted_state_write_preserves_previous_record(monkeypatch, tmp_path):
+    # A crash mid-write must not clobber the existing record — a truncated
+    # state file would let the same prompt be blocked twice.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    session = _fresh_session()
+    _record_block(session, "p-1")
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(oracle_hook.json, "dump", boom)
+    _record_block(session, "p-2")
+    assert _already_blocked(session, "p-1")
+
+
+def test_stale_state_files_pruned_on_write(monkeypatch, tmp_path):
+    _isolate_state(monkeypatch, tmp_path)
+    _record_block("old-session", "p-1")
+    _record_block("fresh-session", "p-1")
+    old = Path(_state_path("old-session"))
+    stale = time.time() - 40 * 86400
+    os.utime(old, (stale, stale))
+    _record_block("new-session", "p-1")
+    assert not old.exists()
+    assert Path(_state_path("fresh-session")).exists()
+
+
+def test_stdin_bom_tolerated(tmp_path, monkeypatch):
+    # Windows pipes can prepend a UTF-8 BOM; it must not disable the hook.
+    _isolate_state(monkeypatch, tmp_path)
+    payload = "﻿" + _payload(tmp_path, [_user_prompt("fix"), _assistant_text("I'm stuck. No idea.")])
+    code, out = run_stop(payload)
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_main_returns_zero_when_stdin_read_raises(monkeypatch):
+    class BrokenStdin:
+        def read(self):
+            raise OSError("pipe gone")
+    monkeypatch.setattr(sys, "stdin", BrokenStdin())
+    from oracle_hook import main
+    assert main(["oracle_hook.py", "stop"]) == 0
 
 
 def test_string_false_stop_hook_active_does_not_suppress(tmp_path, monkeypatch):

@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -103,6 +104,54 @@ def test_consulted_false_for_other_agents():
         _assistant(tool=("Task", {"subagent_type": "general-purpose"})),
     ]
     assert not oracle_consulted_this_turn(entries)
+
+
+def _sidechain(entry):
+    entry["isSidechain"] = True
+    return entry
+
+
+# --- live-transcript hardening ---
+
+def test_load_entries_skips_sidechain_entries(tmp_path):
+    # Subagent (sidechain) entries share the transcript file; their text and
+    # tool_use must never be scanned as the main thread's.
+    p = tmp_path / "t.jsonl"
+    entries = [
+        _user_prompt("fix"),
+        _sidechain(_assistant(text="I'm stuck.")),
+        _assistant(text="done."),
+    ]
+    p.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
+    loaded = load_entries(str(p))
+    assert all(not e.get("isSidechain") for e in loaded)
+    assert last_assistant_text(loaded) == "done."
+
+
+def test_load_entries_tolerates_invalid_utf8(tmp_path):
+    # A stray invalid byte must not disable the whole hook for the turn.
+    p = tmp_path / "t.jsonl"
+    p.write_bytes(
+        b'{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "fix"}]}}\n'
+        b'\xff\xfe garbage line\n'
+        b'{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "done."}]}}\n'
+    )
+    loaded = load_entries(str(p))
+    assert last_assistant_text(loaded) == "done."
+
+
+def test_last_assistant_text_handles_string_content():
+    entries = [{"type": "assistant", "message": {"role": "assistant", "content": "I'm stuck on the mock."}}]
+    assert last_assistant_text(entries) == "I'm stuck on the mock."
+
+
+def test_consulted_via_agent_tool_name():
+    # Newer harnesses dispatch subagents through a tool named "Agent", not "Task".
+    entries = [
+        _user_prompt("fix the bug"),
+        _assistant(tool=("Agent", {"subagent_type": "oracle", "prompt": "brief"})),
+    ]
+    assert oracle_consulted_this_turn(entries)
 
 
 def test_tool_results_do_not_count_as_user_prompts():
