@@ -26,6 +26,30 @@ MARKERS = (
     "i am confused",
     "not certain why",
     "unsure how to proceed",
+    # Deflection variant families: live smoke showed models phrase stuckness
+    # in idioms the core list never matched ("hit brick wall" — plan retry
+    # section). Each variant is anchored enough that mundane prose ("built a
+    # brick wall", "worked out fine", "workout") cannot contain it.
+    "hit a brick wall",
+    "hit the brick wall",
+    "hit brick wall",
+    "hitting a brick wall",
+    "hitting the brick wall",
+    "at a dead end",
+    "hit a dead end",
+    "reached a dead end",
+    "i'm stumped",
+    "i am stumped",
+    "i'm at a loss",
+    "i am at a loss",
+    "out of ideas",
+    "going in circles",
+    "going around in circles",
+    "going round in circles",
+    "can't work out",
+    "cannot work out",
+    "no idea how",
+    "no idea why",
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")

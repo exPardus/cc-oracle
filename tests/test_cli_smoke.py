@@ -2,6 +2,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOOK = str(Path(__file__).resolve().parent.parent / "hooks" / "oracle_hook.py")
@@ -27,10 +28,11 @@ def test_cli_stop_blocks_then_waves_through(tmp_path):
     ]
     transcript.write_text("\n".join(json.dumps(e) for e in entries) + "\n", encoding="utf-8")
     payload = json.dumps({
-        "session_id": "smoke-1", "prompt_id": "p-1",
+        "session_id": f"smoke-{time.time_ns()}", "prompt_id": "p-1",
         "transcript_path": str(transcript), "stop_hook_active": False,
     })
-    env = {"CLAUDE_PLUGIN_DATA": str(tmp_path / "plugdata")}
+    # Dir basename must identify this plugin or the hook ignores the env var.
+    env = {"CLAUDE_PLUGIN_DATA": str(tmp_path / "oracle")}
 
     first = _run("stop", payload, env)
     assert first.returncode == 0
