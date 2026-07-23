@@ -37,7 +37,8 @@ def _fresh_session():
 
 
 def _isolate_state(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin-data"))
+    # Basename must identify THIS plugin — foreign-looking dirs are rejected.
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle"))
 
 
 def test_blocks_on_stuck_turn(tmp_path, monkeypatch):
@@ -137,15 +138,38 @@ def test_session_start_emits_additional_context_envelope():
 
 
 def test_state_paths_distinct_for_colliding_session_ids(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin-data"))
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle"))
     assert _state_path("a/b") != _state_path("ab")
 
 
 def test_state_dir_is_namespaced_under_plugin_data(monkeypatch, tmp_path):
-    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle"))
     p = _state_path("some-session")
     assert Path(p).parent.name == "oracle-state"
-    assert Path(p).parent.parent == tmp_path / "data"
+    assert Path(p).parent.parent == tmp_path / "oracle"
+
+
+def test_state_path_ignores_foreign_plugin_data_env(monkeypatch, tmp_path):
+    # Live incident (plan doc, retry section): CLAUDE_PLUGIN_DATA leaked from
+    # an unrelated plugin's env and redirected our state file into its data
+    # dir. A dir that does not identify THIS plugin must be ignored.
+    foreign = tmp_path / "codex-openai-codex"
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(foreign))
+    p = Path(_state_path("some-session"))
+    assert foreign not in p.parents
+
+
+def test_state_path_accepts_own_plugin_data_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle"))
+    p = Path(_state_path("some-session"))
+    assert tmp_path / "oracle" in p.parents
+
+
+def test_state_path_accepts_marketplace_scoped_own_dir(monkeypatch, tmp_path):
+    # Harness data dirs can be scoped "<plugin>-<marketplace>".
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "oracle-claude-oracle"))
+    p = Path(_state_path("some-session"))
+    assert tmp_path / "oracle-claude-oracle" in p.parents
 
 
 def test_interrupted_state_write_preserves_previous_record(monkeypatch, tmp_path):
