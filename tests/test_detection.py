@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from oracle_hook import marker_hit, is_question_turn, should_nudge
@@ -94,3 +96,51 @@ def test_nudge_marker_outside_blockquote_survives():
 
 def test_nudge_midline_gt_is_not_blockquote():
     assert should_nudge("The assert 3 > 2 holds, yet I'm stuck on the failing test.")
+
+
+# --- deflection variant families (live-smoke: models phrase stuckness in
+# --- idioms the original marker list never matched, e.g. "hit brick wall") ---
+
+@pytest.mark.parametrize("text", [
+    # brick wall family (documented live deflection)
+    "I hit a brick wall trying to trace the leak.",
+    "I hit the brick wall on this refactor.",
+    "I hit brick wall on step 3.",
+    "I'm hitting a brick wall with this linker error.",
+    "Kept hitting the brick wall on the auth flow.",
+    # dead end family
+    "I'm at a dead end with this stack trace.",
+    "I hit a dead end debugging the race.",
+    "I reached a dead end on the migration.",
+    # stumped / at a loss / out of ideas
+    "I'm stumped by this segfault.",
+    "I am stumped. The trace makes no sense.",
+    "I'm at a loss with this flaky test.",
+    "I am at a loss here.",
+    "I'm out of ideas on the deadlock.",
+    "Running out of ideas for this build failure.",
+    # circles family (doctrine's own language)
+    "I keep going in circles on this config issue.",
+    "I've been going around in circles with the types.",
+    "Going round in circles trying to reproduce it.",
+    # British "work out" variant of figure-out
+    "I can't work out where the config is loaded.",
+    "I cannot work out why the mock never fires.",
+    # no-idea family
+    "I have no idea how to unblock this build.",
+    "No idea why the pipeline segfaults.",
+])
+def test_marker_variant_families_fire(text):
+    assert should_nudge(text)
+
+
+@pytest.mark.parametrize("text", [
+    "We built a brick wall texture for the level. Done.",
+    "The street is a dead end; the depot sits at its end. Route mapped.",
+    "Everything worked out fine after the rebase.",
+    "The workout routine parser now passes all tests.",
+    "These ideas are out of scope for v1. Shipped the rest.",
+    "The loop iterates in circles of radius r. Implemented.",
+])
+def test_variant_near_misses_do_not_fire(text):
+    assert not should_nudge(text)
