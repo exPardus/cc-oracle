@@ -6,7 +6,7 @@ A weaker (or any) model consults a best-model, read-only oracle the moment it's 
 
 - **Doctrine** — a `SessionStart` hook injects a small standing instruction (via `additionalContext`): the moment a session notices it's unsure, stuck, confused, or going in circles, it should stop and consult the `oracle` agent with a full brief before attempting solo.
 - **Oracle agent** — `agents/oracle.md` runs on the `fable` model alias, with read-only tools (`Read`, `Grep`, `Glob`; no `Bash`, `Edit`, or `Write`). It enforces a full-brief contract, investigates the codebase itself, and returns a diagnosis and plan for the caller to implement.
-- **Stop-hook safety net** — a conservative marker check on the final assistant message of each turn, catching cases where the model states uncertainty (e.g. `"I'm not sure"`, `"I'm stuck"`, `"can't figure out"`) without having consulted the oracle. It suppresses questions posed to the user, text inside code fences/inline code/double quotes, and anything already covered by an oracle consult this turn; it blocks at most once per turn and fails open (silently) on any parse error or unexpected input.
+- **Stop-hook safety net** — a conservative marker check on the final assistant message of each turn, catching cases where the model states uncertainty (e.g. `"I'm not sure"`, `"I'm stuck"`, `"can't figure out"`) without having consulted the oracle. It suppresses questions posed to the user, text inside code fences/blockquotes/inline code/double quotes, and anything already covered by an oracle consult this turn; it blocks at most once per turn and fails open (silently) on any parse error or unexpected input.
 
 ## Install
 

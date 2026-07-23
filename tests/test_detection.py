@@ -80,3 +80,17 @@ def test_nudge_marker_between_closed_fences_survives():
     # markers BETWEEN complete fence pairs are genuine statements, not quotes
     text = "```\ncode a\n```\nI'm stuck on this linker error.\n```\ncode b\n```"
     assert should_nudge(text)
+
+
+def test_no_nudge_marker_inside_blockquote():
+    text = "The reviewer wrote:\n> I'm not sure this is right\nI disagree; the code is fine."
+    assert not should_nudge(text)
+
+def test_no_nudge_marker_inside_nested_blockquote():
+    assert not should_nudge("Quoting the thread:\n> > I am stuck on this\nResolved upstream.")
+
+def test_nudge_marker_outside_blockquote_survives():
+    assert should_nudge("> old log line, irrelevant\nI'm stuck on this linker error.")
+
+def test_nudge_midline_gt_is_not_blockquote():
+    assert should_nudge("The assert 3 > 2 holds, yet I'm stuck on the failing test.")
