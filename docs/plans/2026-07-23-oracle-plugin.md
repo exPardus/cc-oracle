@@ -4,18 +4,18 @@
 
 **Goal:** A standalone Claude Code plugin (`oracle`) that lets any-tier models escalate to a best-model read-only consultant subagent when unsure/stuck, with a SessionStart doctrine and a conservative Stop-hook safety net.
 
-**Architecture:** One Python stdlib hook script (`hooks/oracle_hook.py`) serves both hook events via a subcommand (`session-start` prints doctrine; `stop` scans the transcript and may emit a block decision). One agent definition (`agents/oracle.md`) with `model: fable` alias. Plugin manifest + hooks.json wire it together. Everything else is tests, README, and repo hygiene.
+**Architecture:** One Python stdlib hook script (`hooks/oracle_hook.py`) serves both hook events via a subcommand (`session-start` emits the doctrine as an additionalContext envelope; `stop` scans the transcript and may emit a block decision). One agent definition (`agents/oracle.md`) with `model: fable` alias. Plugin manifest + hooks.json wire it together. Everything else is tests, README, and repo hygiene.
 
 **Tech Stack:** Python 3 stdlib only (no deps), pytest for tests, Claude Code plugin format (`.claude-plugin/plugin.json`, `hooks/hooks.json`, `agents/*.md`).
 
 ## Global Constraints
 
 - Spec of record: `docs/specs/2026-07-23-oracle-plugin-design.md`. Read it before starting any task.
-- Python stdlib ONLY in `hooks/oracle_hook.py`. Must run on Python 3.8+.
+- Python stdlib ONLY in `hooks/oracle_hook.py`. Target Python 3.9+; verify the suite on the oldest installed interpreter too: `py -3.10 -m pytest -q` in addition to `python -m pytest -q`.
 - Model ALIASES only (`fable`, `opus`) — never hardcoded model IDs like `claude-fable-5`.
-- Oracle agent is read-only: tools `Read, Grep, Glob, Bash` — NO Edit/Write.
+- Oracle agent is read-only: tools `Read, Grep, Glob` — NO Edit/Write/Bash (Bash cannot be technically restricted to read-only; the guarantee is architectural).
 - Hook failure posture: any unexpected input/parse error → exit 0 silently. Never wedge a session.
-- Hook scans ASSISTANT text only — user messages, tool results, tool_use blocks never matched.
+- Hook scans ASSISTANT text only — user messages, tool results, tool_use blocks never matched. Markers inside code fences, inline backticks, or double-quoted strings never matched (quoting ≠ stating).
 - Hook commands in hooks.json use `${CLAUDE_PLUGIN_ROOT}` and forward slashes.
 - Official-docs research report lives at `docs/research/2026-07-23-anthropic-docs-report.md`. Tasks marked **[research-informed]** MUST read it first. Where the report contradicts this plan's schema details, THE REPORT WINS — adjust and note the change in the commit message.
 - Commit after every task (message format shown per task). All commits end with:
@@ -35,12 +35,13 @@ claude-oracle/
 │   ├── hooks.json           # SessionStart + Stop wiring
 │   └── oracle_hook.py       # single stdlib script, both events
 ├── tests/
-│   ├── test_detection.py    # marker + question-suppression logic
+│   ├── test_detection.py    # marker + question/quote-suppression logic
 │   ├── test_transcript.py   # transcript parsing / turn analysis
-│   └── test_stop_entry.py   # end-to-end stdin→stdout behavior of the stop entrypoint
+│   └── test_stop_entry.py   # end-to-end stdin→stdout behavior of the entrypoints
 ├── docs/
 │   ├── specs/2026-07-23-oracle-plugin-design.md   # exists
-│   └── plans/2026-07-23-oracle-plugin.md          # this file
+│   ├── plans/2026-07-23-oracle-plugin.md          # this file
+│   └── research/2026-07-23-anthropic-docs-report.md  # exists
 ├── .gitignore
 ├── LICENSE                  # MIT
 ├── pytest.ini
@@ -55,7 +56,7 @@ claude-oracle/
 - Create: `.gitignore`, `LICENSE`, `pytest.ini`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
 
 **Interfaces:**
-- Produces: plugin name `oracle` (later tasks reference agent as `oracle` and hook paths via `${CLAUDE_PLUGIN_ROOT}`).
+- Produces: plugin name `oracle` (later tasks reference agent as `oracle` and hook paths via `${CLAUDE_PLUGIN_ROOT}`), marketplace name `claude-oracle`.
 
 - [ ] **Step 1: Write `.gitignore`**
 
@@ -181,6 +182,23 @@ def test_no_nudge_without_marker():
 
 def test_no_nudge_empty_text():
     assert not should_nudge("")
+
+
+# --- quoted/fenced-text exemption (quoting is not stating) ---
+
+def test_no_nudge_marker_inside_code_fence():
+    text = "Fixed. The old error was:\n```\nI'm not sure what to do here\n```\nAll tests pass now."
+    assert not should_nudge(text)
+
+def test_no_nudge_marker_inside_inline_code():
+    assert not should_nudge("The log line `cannot figure out the encoding` is expected and harmless.")
+
+def test_no_nudge_marker_inside_double_quotes():
+    assert not should_nudge('The marker list includes "I\'m not sure", quoted here, not stated.')
+
+def test_nudge_survives_stripping_when_genuinely_stuck():
+    # markers OUTSIDE quoted spans must still fire
+    assert should_nudge("I'm stuck. The command `npm test` fails and I can't figure out why.")
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -196,7 +214,11 @@ Expected: FAIL / import error ("No module named 'oracle_hook'").
 
 Stdlib only. Failure posture: any unexpected input -> exit 0, never wedge a session.
 """
+import json
+import os
 import re
+import sys
+import tempfile
 
 # Conservative by design: a false positive (annoying block) is worse than a miss.
 # The instruction path is primary; this hook only catches forgetting.
@@ -216,6 +238,19 @@ MARKERS = (
 )
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+# Quoting is not stating: markers inside fenced code, inline code, or
+# double-quoted strings are exempt. Single quotes are NOT stripped —
+# apostrophes in contractions ("I'm") would corrupt matching.
+_FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`[^`\n]*`")
+_DOUBLE_QUOTED = re.compile(r'"[^"\n]*"')
+
+
+def _strip_quoted(text):
+    text = _FENCED_CODE.sub(" ", text)
+    text = _INLINE_CODE.sub(" ", text)
+    text = _DOUBLE_QUOTED.sub(" ", text)
+    return text
 
 
 def _sentences(text):
@@ -247,8 +282,11 @@ def is_question_turn(text):
 def should_nudge(text):
     if not text:
         return False
-    return marker_hit(text) and not is_question_turn(text)
+    stripped = _strip_quoted(text)
+    return marker_hit(stripped) and not is_question_turn(stripped)
 ```
+
+(`os`, `sys`, `tempfile` are unused until Tasks 3–4 — that is intentional; this is the file's final import block.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -259,7 +297,7 @@ Expected: all PASS.
 
 ```bash
 git add hooks/oracle_hook.py tests/test_detection.py
-git commit -m "feat: uncertainty detection with question-to-user suppression"
+git commit -m "feat: uncertainty detection with question and quoted-text suppression"
 ```
 
 ---
@@ -267,19 +305,18 @@ git commit -m "feat: uncertainty detection with question-to-user suppression"
 ### Task 3: Transcript analysis (TDD)
 
 **Files:**
-- Modify: `hooks/oracle_hook.py` (append functions)
+- Modify: `hooks/oracle_hook.py` (append functions after `should_nudge`; imports already present)
 - Test: `tests/test_transcript.py`
 
 **Interfaces:**
 - Consumes: nothing from Task 2 (independent functions in same file).
 - Produces: `load_entries(path: str) -> list[dict]`, `last_assistant_text(entries: list[dict]) -> str`, `oracle_consulted_this_turn(entries: list[dict]) -> bool`. Task 4 calls all three.
 
-Transcript format (Claude Code session JSONL): one JSON object per line; assistant lines look like `{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle", ...}}]}}`; user lines have `"type": "user"` with content either a string or a list of blocks (`text` blocks for real prompts, `tool_result` blocks for tool returns). Verify block shapes against the research report and adjust if it contradicts this.
+Transcript format (research report §6): one JSON object per line; assistant lines: `{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}, {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle", ...}}]}}`; user lines have `"type": "user"` with content either a string or a list of blocks (`text` blocks for real prompts, `tool_result` blocks for tool returns).
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_transcript.py`:
 
 ```python
-import json
 import sys
 from pathlib import Path
 
@@ -360,6 +397,15 @@ def test_consulted_matches_plugin_scoped_name():
     assert oracle_consulted_this_turn(entries)
 
 
+def test_consulted_rejects_substring_lookalikes():
+    # exact-name rule: an unrelated agent containing "oracle" must NOT count
+    entries = [
+        _user_prompt("fix the bug"),
+        _assistant(tool=("Task", {"subagent_type": "my-oracledb-helper"})),
+    ]
+    assert not oracle_consulted_this_turn(entries)
+
+
 def test_consulted_false_when_consult_was_previous_turn():
     entries = [
         _user_prompt("first ask"),
@@ -394,13 +440,9 @@ def test_tool_results_do_not_count_as_user_prompts():
 Run: `python -m pytest tests/test_transcript.py -v`
 Expected: FAIL with ImportError (names not defined).
 
-- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py`:
+- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py` (after `should_nudge`; no new imports needed):
 
 ```python
-import json
-import os
-
-
 def load_entries(path):
     entries = []
     try:
@@ -457,6 +499,12 @@ def _is_real_user_prompt(entry):
     return has_text and not has_tool_result
 
 
+def _is_oracle_subagent(name):
+    # Exact-name rule: "oracle" or plugin-scoped "<plugin>:oracle".
+    # Never a bare substring test — "my-oracledb-helper" must not count.
+    return name == "oracle" or name.endswith(":oracle")
+
+
 def oracle_consulted_this_turn(entries):
     start = 0
     for i, entry in enumerate(entries):
@@ -468,12 +516,10 @@ def oracle_consulted_this_turn(entries):
         for b in _content_blocks(entry):
             if b.get("type") == "tool_use" and b.get("name") == "Task":
                 subagent = str((b.get("input") or {}).get("subagent_type", "")).lower()
-                if "oracle" in subagent:
+                if _is_oracle_subagent(subagent):
                     return True
     return False
 ```
-
-(Place the `import json, os` merge at the top of the file with the existing imports — one import block, no duplicates.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -484,7 +530,7 @@ Expected: all PASS. Also run `python -m pytest -q` — full suite green.
 
 ```bash
 git add hooks/oracle_hook.py tests/test_transcript.py
-git commit -m "feat: transcript parsing - assistant-only scan, turn-scoped oracle detection"
+git commit -m "feat: transcript parsing - assistant-only scan, exact-name turn-scoped oracle detection"
 ```
 
 ---
@@ -492,15 +538,15 @@ git commit -m "feat: transcript parsing - assistant-only scan, turn-scoped oracl
 ### Task 4: Hook entrypoints + wiring (TDD) **[research-informed]**
 
 **Files:**
-- Modify: `hooks/oracle_hook.py` (cooldown, `run_stop`, `run_session_start`, `main`)
+- Modify: `hooks/oracle_hook.py` (per-turn guard, `run_stop`, `run_session_start`, `main` — appended after `oracle_consulted_this_turn`; imports already present)
 - Create: `hooks/hooks.json`
 - Test: `tests/test_stop_entry.py`
 
 **Interfaces:**
 - Consumes: `should_nudge`, `load_entries`, `last_assistant_text`, `oracle_consulted_this_turn` (Tasks 2–3).
-- Produces: CLI contract `python hooks/oracle_hook.py stop|session-start`; `run_stop(stdin_text: str, now: float|None = None) -> tuple[int, str]` returning (exit_code, stdout).
+- Produces: CLI contract `python hooks/oracle_hook.py stop|session-start`; `run_stop(stdin_text: str) -> tuple[int, str]`; `run_session_start() -> tuple[int, str]`; constants `DOCTRINE`, `NUDGE`.
 
-Contracts confirmed by the research report (`docs/research/2026-07-23-anthropic-docs-report.md`): Stop stdin JSON has `session_id`, `transcript_path`, `stop_hook_active`; blocking output is exit 0 + stdout `{"decision": "block", "reason": "..."}`; Claude Code itself caps Stop blocks at 8 per turn (our cooldown is an extra belt). SessionStart context injection uses the JSON envelope `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}` on stdout, exit 0.
+Contracts confirmed by the research report (`docs/research/2026-07-23-anthropic-docs-report.md` §6): Stop stdin JSON has `session_id`, `prompt_id`, `transcript_path`, `stop_hook_active`; blocking output is exit 0 + stdout `{"decision": "block", "reason": "..."}`; Claude Code itself caps Stop blocks at 8 per turn (our per-turn guard is stricter). SessionStart context injection uses the JSON envelope `{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "..."}}` on stdout, exit 0. Per-turn guard: state file under `${CLAUDE_PLUGIN_DATA}` (report §3; fall back to OS temp dir when unset) records the `prompt_id` already blocked — never a wall-clock window.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_stop_entry.py`:
 
@@ -512,7 +558,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
-import oracle_hook
 from oracle_hook import run_stop, run_session_start, DOCTRINE
 
 
@@ -530,9 +575,10 @@ def _user_prompt(text):
     return {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}}
 
 
-def _payload(tmp_path, entries, session="sess-1", stop_hook_active=False):
+def _payload(tmp_path, entries, session=None, prompt_id="p-1", stop_hook_active=False):
     return json.dumps({
-        "session_id": session,
+        "session_id": session or _fresh_session(),
+        "prompt_id": prompt_id,
         "transcript_path": _write_transcript(tmp_path, entries),
         "stop_hook_active": stop_hook_active,
     })
@@ -542,8 +588,13 @@ def _fresh_session():
     return f"sess-{time.time_ns()}"
 
 
-def test_blocks_on_stuck_turn(tmp_path):
-    payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("I'm stuck. The mock never fires.")], session=_fresh_session())
+def _isolate_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(tmp_path / "plugin-data"))
+
+
+def test_blocks_on_stuck_turn(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("I'm stuck. The mock never fires.")])
     code, out = run_stop(payload)
     assert code == 0
     decision = json.loads(out)
@@ -551,24 +602,27 @@ def test_blocks_on_stuck_turn(tmp_path):
     assert "oracle" in decision["reason"].lower()
 
 
-def test_silent_when_no_marker(tmp_path):
-    payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("Done. Tests pass.")], session=_fresh_session())
+def test_silent_when_no_marker(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("Done. Tests pass.")])
     assert run_stop(payload) == (0, "")
 
 
-def test_silent_when_stop_hook_active(tmp_path):
-    payload = _payload(tmp_path, [_user_prompt("x"), _assistant_text("I'm stuck.")], session=_fresh_session(), stop_hook_active=True)
+def test_silent_when_stop_hook_active(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    payload = _payload(tmp_path, [_user_prompt("x"), _assistant_text("I'm stuck.")], stop_hook_active=True)
     assert run_stop(payload) == (0, "")
 
 
-def test_silent_when_oracle_already_consulted(tmp_path):
+def test_silent_when_oracle_already_consulted(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
     entries = [
         _user_prompt("fix it"),
         {"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle"}}]}},
         _assistant_text("I'm stuck even after the consult."),
     ]
-    payload = _payload(tmp_path, entries, session=_fresh_session())
+    payload = _payload(tmp_path, entries)
     assert run_stop(payload) == (0, "")
 
 
@@ -576,22 +630,34 @@ def test_silent_on_malformed_stdin():
     assert run_stop("this is not json") == (0, "")
 
 
-def test_silent_on_missing_transcript():
-    payload = json.dumps({"session_id": _fresh_session(), "transcript_path": "Z:/nope.jsonl", "stop_hook_active": False})
+def test_silent_on_missing_transcript(monkeypatch, tmp_path):
+    _isolate_state(monkeypatch, tmp_path)
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": "Z:/nope.jsonl", "stop_hook_active": False})
     assert run_stop(payload) == (0, "")
 
 
-def test_cooldown_blocks_only_once(tmp_path):
+def test_silent_on_corrupted_transcript(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    p = tmp_path / "corrupt.jsonl"
+    p.write_text("garbage\n{{{not json\n", encoding="utf-8")
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": str(p), "stop_hook_active": False})
+    assert run_stop(payload) == (0, "")
+
+
+def test_turn_guard_blocks_once_per_prompt(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
     session = _fresh_session()
     entries = [_user_prompt("fix"), _assistant_text("I'm stuck. No idea.")]
-    payload = _payload(tmp_path, entries, session=session)
-    t0 = 1_000_000.0
-    code, out = run_stop(payload, now=t0)
+    payload_a = _payload(tmp_path, entries, session=session, prompt_id="p-1")
+    code, out = run_stop(payload_a)
     assert json.loads(out)["decision"] == "block"
-    # 30s later, same session: suppressed by cooldown
-    assert run_stop(payload, now=t0 + 30) == (0, "")
-    # after cooldown expiry: allowed again
-    code2, out2 = run_stop(payload, now=t0 + oracle_hook.COOLDOWN_SECONDS + 1)
+    # same turn (same prompt_id): waved through
+    assert run_stop(payload_a) == (0, "")
+    # NEW turn (new prompt_id), same session: eligible again — no wall-clock window
+    payload_b = _payload(tmp_path, entries, session=session, prompt_id="p-2")
+    code2, out2 = run_stop(payload_b)
     assert json.loads(out2)["decision"] == "block"
 
 
@@ -603,8 +669,8 @@ def test_session_start_emits_additional_context_envelope():
     assert hso["hookEventName"] == "SessionStart"
     assert hso["additionalContext"] == DOCTRINE
     assert "oracle" in DOCTRINE.lower()
-    # doctrine must stay tiny (spec: 3-6 lines, minimal injection surface)
-    assert len(DOCTRINE.splitlines()) <= 12
+    # doctrine must stay tiny (spec: 3-6 doctrine lines + 2 wrapper tags)
+    assert len(DOCTRINE.splitlines()) <= 8
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -612,55 +678,48 @@ def test_session_start_emits_additional_context_envelope():
 Run: `python -m pytest tests/test_stop_entry.py -v`
 Expected: FAIL with ImportError.
 
-- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py` (merge imports at top: add `sys`, `tempfile`, `time`):
+- [ ] **Step 3: Append implementation** to `hooks/oracle_hook.py`:
 
 ```python
-import sys
-import tempfile
-import time
-
-COOLDOWN_SECONDS = 120
-
 NUDGE = (
     "You stated uncertainty this turn without consulting the oracle. "
     "Dispatch the `oracle` agent now with a full brief — Goal, Problem (errors verbatim), "
     "Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) — "
-    "then implement its plan. If the oracle model is unavailable, retry the dispatch with model \"opus\"."
+    "then implement its plan."
 )
 
 DOCTRINE = """<oracle-plugin>
 Uncertainty is a signal, not a failure. The moment you notice you are unsure, stuck, confused, or going in circles: do NOT keep attempting solo and pollute your context — dispatch the `oracle` agent first, then implement its plan yourself.
 When summoning the oracle, ALWAYS send a full brief: Goal (what the task ultimately wants), Problem (the exact blocker, errors quoted verbatim), Tried (attempts made + why each failed), Context (relevant files/paths, versions, platform, project rules), Question (the specific ask, not "help"). The oracle shares none of your context — a thin brief wastes the consult and forces a second round-trip.
-If the dispatch fails because the model is unavailable, retry the same Agent call with model "opus".
+If the dispatch errors for any reason, retry the same Agent call once with model "opus".
 This applies at every tier: strong models may consult the oracle for a fresh-context second opinion.
 </oracle-plugin>"""
 
 
 def _state_path(session_id):
+    base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(tempfile.gettempdir(), "claude-oracle")
+    os.makedirs(base, exist_ok=True)
     safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_") or "unknown"
-    d = os.path.join(tempfile.gettempdir(), "claude-oracle")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, safe + ".json")
+    return os.path.join(base, safe + ".json")
 
 
-def _in_cooldown(session_id, now):
+def _already_blocked(session_id, prompt_id):
     try:
         with open(_state_path(session_id), encoding="utf-8") as f:
-            last = json.load(f).get("last_block", 0)
-        return (now - last) < COOLDOWN_SECONDS
+            return json.load(f).get("blocked_prompt") == prompt_id
     except (OSError, ValueError):
         return False
 
 
-def _record_block(session_id, now):
+def _record_block(session_id, prompt_id):
     try:
         with open(_state_path(session_id), "w", encoding="utf-8") as f:
-            json.dump({"last_block": now}, f)
+            json.dump({"blocked_prompt": prompt_id}, f)
     except OSError:
         pass
 
 
-def run_stop(stdin_text, now=None):
+def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
         payload = json.loads(stdin_text)
@@ -679,11 +738,11 @@ def run_stop(stdin_text, now=None):
         if oracle_consulted_this_turn(entries):
             return 0, ""
         session_id = payload.get("session_id", "unknown")
-        if now is None:
-            now = time.time()
-        if _in_cooldown(session_id, now):
+        prompt_id = payload.get("prompt_id") or ""
+        if prompt_id and _already_blocked(session_id, prompt_id):
             return 0, ""
-        _record_block(session_id, now)
+        if prompt_id:
+            _record_block(session_id, prompt_id)
         return 0, json.dumps({"decision": "block", "reason": NUDGE})
     except Exception:
         return 0, ""
@@ -718,10 +777,10 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `python -m pytest -q`
-Expected: full suite PASS.
+Run: `python -m pytest -q` and `py -3.10 -m pytest -q`
+Expected: full suite PASS on both interpreters.
 
-- [ ] **Step 5: Write `hooks/hooks.json`.** Portability constraint (report §10): `python3` often absent on Windows Git Bash; `python` often absent on modern Ubuntu. Use shell-form fallback chaining — if the first interpreter is missing (exit 127, stdin unconsumed) the second runs; the script itself always exits 0, so double-execution cannot happen on success:
+- [ ] **Step 5: Write `hooks/hooks.json`.** Portability (report §10): `python3` often absent on Windows Git Bash; `python` often absent on modern Ubuntu. Shell-form fallback chaining — if the first interpreter is missing (exit 127, stdin unconsumed) the second runs; the script itself always exits 0, so double-execution cannot happen on success (empirically verified: `sh -c 'nonexistent || cat'` delivers stdin to the fallback):
 
 ```json
 {
@@ -757,8 +816,8 @@ No matcher on SessionStart — doctrine applies on startup, resume, clear, and c
 Run: `echo '{"session_id":"smoke","transcript_path":"/nope","stop_hook_active":false}' | python hooks/oracle_hook.py stop; echo "exit=$?"`
 Expected: no output, `exit=0`.
 
-Run: `python hooks/oracle_hook.py session-start | head -2`
-Expected: doctrine text starting with `<oracle-plugin>`.
+Run: `python hooks/oracle_hook.py session-start`
+Expected: one-line JSON envelope containing `"hookEventName": "SessionStart"`.
 
 - [ ] **Step 7: Commit**
 
@@ -777,13 +836,13 @@ git commit -m "feat: stop-hook safety net + session-start doctrine, wired via ho
 **Interfaces:**
 - Consumes: plugin name `oracle` (Task 1); doctrine brief fields (Task 4) — the agent prompt's brief contract must use the SAME five field names: Goal, Problem, Tried, Context, Question.
 
-- [ ] **Step 1: Write `agents/oracle.md`.** Baseline below; refine the body per the research report's prompt-engineering guidance (role definition, output format, XML structuring, description-writing for proactive delegation). Frontmatter constraints are hard: `model: fable` alias, read-only tools, no Edit/Write.
+- [ ] **Step 1: Write `agents/oracle.md`.** Baseline below; refine the body per the research report's prompt-engineering guidance (§5, §9: role definition, output format, description-writing for proactive delegation). Frontmatter constraints are hard: `model: fable` alias; tools `Read, Grep, Glob` ONLY — no Bash, no Edit, no Write (read-only is architectural, not prose).
 
 ```markdown
 ---
 name: oracle
 description: Senior consultant running the best available model. Use PROACTIVELY the moment you are unsure, stuck, confused, going in circles, or want a second opinion — BEFORE attempting solo and polluting your context. Send a full brief: Goal, Problem (errors verbatim), Tried, Context (files/constraints), Question. Read-only advisor; it returns a diagnosis and plan for YOU to implement.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob
 model: fable
 ---
 
@@ -797,14 +856,13 @@ If the brief is missing Goal, Tried, or the verbatim error: your FIRST line must
 
 ## Method
 
-1. Read the relevant code yourself (Read/Grep/Glob; Bash for read-only inspection like `git log`, `ls`). Verify the brief's claims against the code — do not trust them blindly.
+1. Read the relevant code yourself (Read/Grep/Glob). Verify the brief's claims against the code — do not trust them blindly.
 2. Diagnose the root cause, not the symptom.
 3. Produce a concrete plan the caller can execute.
 
 ## Hard rules
 
-- NEVER edit, write, or create files. NEVER run state-changing commands. You are an advisor, not a fixer.
-- Do not attempt the task yourself; the caller implements.
+- You have no write access, by design. Never propose that you apply changes yourself; the caller implements.
 - Be brief: this is a consult, not a takeover.
 
 ## Output format
@@ -818,7 +876,7 @@ Respond with exactly these sections:
 Your final message is consumed by another model, not a human — no pleasantries, no restating the brief.
 ```
 
-- [ ] **Step 2: Sanity check** — confirm frontmatter parses (visually: `---` fences, valid YAML, no tabs) and that `model:` uses an alias, not an ID. Note (report §4): an unavailable model alias falls back to the inherited (caller's) model automatically; the doctrine's explicit `opus` retry is the stronger path and stays.
+- [ ] **Step 2: Sanity check** — confirm frontmatter parses (visually: `---` fences, valid YAML, no tabs) and that `model:` uses an alias, not an ID. Note (report §4): an unavailable model alias falls back to the inherited (caller's) model silently — no error reaches the caller. The doctrine's retry-on-error line covers actual dispatch *errors* only; the silent-downgrade caveat is documented in the README (Task 6), not here.
 
 - [ ] **Step 3: Commit**
 
@@ -835,19 +893,20 @@ git commit -m "feat: oracle agent - read-only best-model consultant"
 - Create: `README.md`
 
 **Interfaces:**
-- Consumes: everything prior; install instructions must match `.claude-plugin/marketplace.json` (marketplace name `claude-oracle`, plugin name `oracle`).
+- Consumes: everything prior; install instructions must match `.claude-plugin/marketplace.json` (marketplace name `claude-oracle`, plugin name `oracle`) and report §8 syntax.
 
-- [ ] **Step 1: Write `README.md`** covering, in this order (exact install command syntax from the research report — assume GitHub repo `Techn0Ninja27/claude-oracle`):
+- [ ] **Step 1: Write `README.md`** covering, in this order (install syntax from report §8 — GitHub repo `Techn0Ninja27/claude-oracle`):
   - Title + one-line pitch: weaker (or any) model consults a best-model read-only oracle when unsure, instead of flailing solo — fewer wasted tokens, better code.
-  - **How it works** — 3 bullets: doctrine (SessionStart), oracle agent (fable alias, read-only, full-brief contract), Stop-hook safety net (conservative markers, question-to-user + user-text suppression, cooldown, fail-open).
-  - **Install** — marketplace add + plugin install commands, plus local-directory variant.
+  - **How it works** — 3 bullets: doctrine (SessionStart additionalContext), oracle agent (fable alias, read-only Read/Grep/Glob, full-brief contract), Stop-hook safety net (conservative markers; question-to-user, quoted/fenced-text, and user-text suppression; per-turn guard; fail-open).
+  - **Install** — `/plugin marketplace add Techn0Ninja27/claude-oracle` then `/plugin install oracle@claude-oracle`; CLI variant `claude plugin install oracle@claude-oracle`; local-directory variant `/plugin marketplace add ./claude-oracle`.
   - **Usage** — nothing to do manually; example of what a consult looks like (brief fields listed); note any-tier usage (second opinion).
   - **The brief contract** — the five fields, one line each.
-  - **Configuration** — none in v1; model aliases fable→opus fallback explained.
-  - **Requirements** — Claude Code with plugin support, Python 3.8+ on PATH as `python`.
-  - **Development** — `python -m pytest -q`; repo layout table; link to spec + plan under `docs/`.
+  - **Model selection** — fable alias; per official docs an alias unavailable on your plan/provider silently falls back to the session's own model (documented caveat); on actual dispatch errors the doctrine retries once with opus; aliases resolve per provider (API/Bedrock/Vertex).
+  - **Configuration** — none in v1.
+  - **Requirements** — Claude Code with plugin support; Python 3.9+ reachable as `python` or `python3`.
+  - **Development** — `python -m pytest -q`; repo layout table; link to spec + plan + research report under `docs/`.
   - **License** — MIT.
-  Keep it tight and professional — no marketing fluff, no emoji walls. This is the public face of the repo.
+  Keep it tight and professional — no marketing fluff, no emoji walls. This is the public face of the repo. IMPORTANT: when quoting the marker list or uncertainty phrases in the README, keep them inside backticks or quotes (they will then be exempt from the hook's own matching — dogfooding the quoted-text rule).
 
 - [ ] **Step 2: Verify all commands/paths in README against the actual repo** (manifest names, file paths, pytest command).
 
@@ -862,8 +921,8 @@ git commit -m "docs: README with install, usage, brief contract, development gui
 
 ### Task 7: Review pass + fixes
 
-- [ ] **Step 1: Dispatch code-reviewer subagent(s)** over the full repo (hooks script + tests + agent + manifests + README) checking: spec conformance (every spec bullet implemented), fail-open posture actually total (no code path that can exit non-zero or crash the hook), false-positive surface of the marker list, hooks.json schema correctness, README accuracy.
-- [ ] **Step 2: Triage findings** (superpowers:receiving-code-review — verify before implementing), fix real issues TDD-style, re-run `python -m pytest -q`.
+- [ ] **Step 1: Dispatch adversarial code-reviewer subagent(s)** over the full repo (hooks script + tests + agent + manifests + README) checking: spec conformance (every spec bullet implemented), fail-open posture actually total (no code path that can exit non-zero or crash the hook), false-positive surface of the marker list (quoted/fenced exemption working), hooks.json schema correctness vs report, README accuracy.
+- [ ] **Step 2: Triage findings** (superpowers:receiving-code-review — verify before implementing), fix real issues TDD-style, re-run `python -m pytest -q` and `py -3.10 -m pytest -q`.
 - [ ] **Step 3: Commit fixes**
 
 ```bash
@@ -871,13 +930,32 @@ git add -A
 git commit -m "fix: address review findings"
 ```
 
+Repeat Steps 1–3 until a review round returns no MAJOR+ findings.
+
 ---
 
 ### Task 8: Integration smoke test (live Claude Code)
 
-- [ ] **Step 1: SessionStart + plugin load smoke.** `--plugin-dir` is UNCONFIRMED in docs (report §11) — wire the two hooks directly into a temp `--settings` JSON instead (commands pointing at `C:/proga/claude-oracle/hooks/oracle_hook.py` with forward slashes, same fallback chaining as hooks.json). From a scratch temp dir: `claude -p "Reply with the single word READY" --model haiku --settings <temp-settings.json>`. Expected: exits 0, replies READY, no hook errors in output.
-- [ ] **Step 2: Stop-hook live check.** Same setup, prompt: `claude -p "Say exactly: I'm stuck and cannot figure out this problem. Then stop." --model haiku --output-format json`. Expected: the stop hook blocks once; final output shows the model continued after the nudge (or, if it dispatched an oracle consult, that's a pass too). Confirm no infinite loop (session terminates).
-- [ ] **Step 3: Record results** in `docs/plans/2026-07-23-oracle-plugin.md` under a "Smoke results" heading (date, commands, outcome), commit:
+- [ ] **Step 0: Verify CLI flags.** Run `claude --help` and confirm `--settings` accepts a JSON file path (it is used by claude-fleet's worker spawning on this machine, so it exists; confirm syntax anyway). `--plugin-dir` is UNCONFIRMED in docs — do not rely on it.
+- [ ] **Step 1: SessionStart wiring smoke.** Write `<scratch>/oracle-smoke-settings.json` (forward slashes; same fallback chaining as hooks.json):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "python \"C:/proga/claude-oracle/hooks/oracle_hook.py\" session-start || python3 \"C:/proga/claude-oracle/hooks/oracle_hook.py\" session-start"}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "python \"C:/proga/claude-oracle/hooks/oracle_hook.py\" stop || python3 \"C:/proga/claude-oracle/hooks/oracle_hook.py\" stop"}]}
+    ]
+  }
+}
+```
+
+From a scratch temp dir: `claude -p "Reply with the single word READY" --model haiku --settings <scratch>/oracle-smoke-settings.json`. Expected: exits 0, replies READY, no hook errors.
+
+- [ ] **Step 2: Stop-hook live check.** Same temp dir, SAME `--settings <scratch>/oracle-smoke-settings.json` flag: `claude -p "State, as your own words and not a quotation: I'm stuck and cannot figure out this problem. Then end your turn." --model haiku --settings <scratch>/oracle-smoke-settings.json --output-format json`. Expected: the stop hook blocks once (nudge visible in behavior — model continues after the block); session terminates (no loop; per-turn guard + platform 8-cap). A model that instead dispatches an oracle consult is also a pass.
+- [ ] **Step 3: Record results** in `docs/plans/2026-07-23-oracle-plugin.md` under "Smoke results" (date, commands, outcome), commit:
 
 ```bash
 git add docs/plans/2026-07-23-oracle-plugin.md
