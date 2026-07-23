@@ -80,22 +80,26 @@ _FAMILY_PATTERNS = {
 }
 _FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 
-# This plugin's manifest name (.claude-plugin/plugin.json). Used to verify a
-# CLAUDE_PLUGIN_DATA env var actually belongs to us — the var is inherited by
-# child processes, so a foreign plugin's value can leak into our environment
-# (live incident: codex's data dir received our state file).
+# This plugin's identity (.claude-plugin/plugin.json + marketplace.json).
+# Used to verify a CLAUDE_PLUGIN_DATA env var actually belongs to us — the
+# var is inherited by child processes, so a foreign plugin's value can leak
+# into our environment (live incident: codex's data dir received our state
+# file). The allowlist is EXACT known forms, never a prefix test: an open
+# startswith("oracle-") would accept an unrelated "oracle-db-tools" plugin.
 _PLUGIN_NAME = "oracle"
+_MARKETPLACE_NAME = "claude-oracle"
+_OWN_DATA_DIR_NAMES = frozenset((
+    _PLUGIN_NAME,
+    _PLUGIN_NAME + "-" + _MARKETPLACE_NAME,
+    _PLUGIN_NAME + "@" + _MARKETPLACE_NAME,
+))
 
 
 def _own_plugin_data():
     env = os.environ.get("CLAUDE_PLUGIN_DATA", "")
     if not env:
         return None
-    base_name = os.path.basename(os.path.normpath(env))
-    # Accept exactly our plugin name, or a harness-scoped form of it
-    # ("oracle-<marketplace>" / "oracle@<marketplace>"). Anything else is
-    # another plugin's dir — never write there.
-    if base_name == _PLUGIN_NAME or base_name.startswith((_PLUGIN_NAME + "-", _PLUGIN_NAME + "@")):
+    if os.path.basename(os.path.normpath(env)) in _OWN_DATA_DIR_NAMES:
         return env
     return None
 
