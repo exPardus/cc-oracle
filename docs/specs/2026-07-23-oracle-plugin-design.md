@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-23
 **Status:** Implemented and tested (see `docs/plans/2026-07-23-oracle-plugin.md` for build record + smoke results)
-**Repo:** `C:\proga\claude-oracle` (standalone Claude Code plugin)
+**Repo:** `C:\proga\cc-oracle` (standalone Claude Code plugin, GitHub: `exPardus/cc-oracle`)
 
 ## Problem
 

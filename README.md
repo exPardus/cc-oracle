@@ -1,4 +1,4 @@
-# claude-oracle
+# cc-oracle
 
 A weaker (or any) model consults a best-model, read-only oracle the moment it's unsure or stuck, instead of flailing solo — fewer wasted tokens, better code.
 
@@ -11,20 +11,20 @@ A weaker (or any) model consults a best-model, read-only oracle the moment it's 
 ## Install
 
 ```
-/plugin marketplace add Techn0Ninja27/claude-oracle
-/plugin install oracle@claude-oracle
+/plugin marketplace add exPardus/cc-oracle
+/plugin install oracle@cc-oracle
 ```
 
 CLI variant:
 
 ```
-claude plugin install oracle@claude-oracle
+claude plugin install oracle@cc-oracle
 ```
 
 Local-directory variant (for development or before publishing):
 
 ```
-/plugin marketplace add ./claude-oracle
+/plugin marketplace add ./cc-oracle
 ```
 
 ## Usage
