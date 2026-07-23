@@ -3,6 +3,7 @@
 
 Stdlib only. Failure posture: any unexpected input -> exit 0, never wedge a session.
 """
+import hashlib
 import json
 import os
 import re
@@ -47,7 +48,7 @@ def _sentences(text):
 
 
 def marker_hit(text):
-    low = text.lower()
+    low = re.sub(r"\s+", " ", text.lower())
     return any(m in low for m in MARKERS)
 
 
@@ -171,7 +172,7 @@ This applies at every tier: strong models may consult the oracle for a fresh-con
 def _state_path(session_id):
     base = os.environ.get("CLAUDE_PLUGIN_DATA") or os.path.join(tempfile.gettempdir(), "claude-oracle")
     os.makedirs(base, exist_ok=True)
-    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_") or "unknown"
+    safe = hashlib.sha1(str(session_id).encode("utf-8", "surrogateescape")).hexdigest()[:16]
     return os.path.join(base, safe + ".json")
 
 
@@ -197,7 +198,7 @@ def run_stop(stdin_text):
         payload = json.loads(stdin_text)
         if not isinstance(payload, dict):
             return 0, ""
-        if payload.get("stop_hook_active"):
+        if payload.get("stop_hook_active") is True:
             return 0, ""
         transcript_path = payload.get("transcript_path")
         if not transcript_path:

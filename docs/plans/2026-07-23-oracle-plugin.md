@@ -921,9 +921,9 @@ git commit -m "docs: README with install, usage, brief contract, development gui
 
 ### Task 7: Review pass + fixes
 
-- [ ] **Step 1: Dispatch adversarial code-reviewer subagent(s)** over the full repo (hooks script + tests + agent + manifests + README) checking: spec conformance (every spec bullet implemented), fail-open posture actually total (no code path that can exit non-zero or crash the hook), false-positive surface of the marker list (quoted/fenced exemption working), hooks.json schema correctness vs report, README accuracy.
-- [ ] **Step 2: Triage findings** (superpowers:receiving-code-review — verify before implementing), fix real issues TDD-style, re-run `python -m pytest -q` and `py -3.10 -m pytest -q`.
-- [ ] **Step 3: Commit fixes**
+- [x] **Step 1: Dispatch adversarial code-reviewer subagent(s)** over the full repo (hooks script + tests + agent + manifests + README) checking: spec conformance (every spec bullet implemented), fail-open posture actually total (no code path that can exit non-zero or crash the hook), false-positive surface of the marker list (quoted/fenced exemption working), hooks.json schema correctness vs report, README accuracy.
+- [x] **Step 2: Triage findings** (superpowers:receiving-code-review — verify before implementing), fix real issues TDD-style, re-run `python -m pytest -q` and `py -3.10 -m pytest -q`.
+- [x] **Step 3: Commit fixes**
 
 ```bash
 git add -A

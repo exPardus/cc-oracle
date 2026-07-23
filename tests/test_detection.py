@@ -67,3 +67,16 @@ def test_no_nudge_marker_inside_double_quotes():
 def test_nudge_survives_stripping_when_genuinely_stuck():
     # markers OUTSIDE quoted spans must still fire
     assert should_nudge("I'm stuck. The command `npm test` fails and I can't figure out why.")
+
+
+def test_marker_hit_survives_newline_split():
+    assert marker_hit("I'm not\nsure why this fails.")
+
+def test_marker_hit_survives_double_space():
+    assert marker_hit("I'm  not sure why this fails.")
+
+
+def test_nudge_marker_between_closed_fences_survives():
+    # markers BETWEEN complete fence pairs are genuine statements, not quotes
+    text = "```\ncode a\n```\nI'm stuck on this linker error.\n```\ncode b\n```"
+    assert should_nudge(text)
