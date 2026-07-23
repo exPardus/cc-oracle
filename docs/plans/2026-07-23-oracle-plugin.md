@@ -58,7 +58,7 @@ claude-oracle/
 **Interfaces:**
 - Produces: plugin name `oracle` (later tasks reference agent as `oracle` and hook paths via `${CLAUDE_PLUGIN_ROOT}`), marketplace name `claude-oracle`.
 
-- [ ] **Step 1: Write `.gitignore`**
+- [x] **Step 1: Write `.gitignore`**
 
 ```gitignore
 __pycache__/
@@ -66,16 +66,16 @@ __pycache__/
 .pytest_cache/
 ```
 
-- [ ] **Step 2: Write `LICENSE`** — standard MIT license text, year 2026, holder `Techn0Ninja27`.
+- [x] **Step 2: Write `LICENSE`** — standard MIT license text, year 2026, holder `Techn0Ninja27`.
 
-- [ ] **Step 3: Write `pytest.ini`**
+- [x] **Step 3: Write `pytest.ini`**
 
 ```ini
 [pytest]
 testpaths = tests
 ```
 
-- [ ] **Step 4: Write `.claude-plugin/plugin.json`**
+- [x] **Step 4: Write `.claude-plugin/plugin.json`**
 
 ```json
 {
@@ -91,7 +91,7 @@ testpaths = tests
 }
 ```
 
-- [ ] **Step 5: Write `.claude-plugin/marketplace.json`**
+- [x] **Step 5: Write `.claude-plugin/marketplace.json`**
 
 ```json
 {
@@ -109,7 +109,7 @@ testpaths = tests
 }
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A

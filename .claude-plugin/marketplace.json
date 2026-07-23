@@ -1,0 +1,13 @@
+{
+  "name": "claude-oracle",
+  "owner": {
+    "name": "Techn0Ninja27"
+  },
+  "plugins": [
+    {
+      "name": "oracle",
+      "source": "./",
+      "description": "When unsure or stuck, consult a best-model read-only oracle instead of flailing solo."
+    }
+  ]
+}
