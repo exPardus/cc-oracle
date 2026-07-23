@@ -1,6 +1,6 @@
 {
   "name": "oracle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "When unsure or stuck, consult a best-model read-only oracle instead of flailing solo.",
   "author": {
     "name": "Techn0Ninja27"
