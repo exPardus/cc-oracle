@@ -356,19 +356,29 @@ def _py310_violations(src):
     except SyntaxError as e:
         violations.append(f"not 3.9-parseable: {e.msg}")
     tree = ast.parse(src)
-    annotation_roots = []
+
+    def _typeish(node):
+        # Heuristic "looks like a type" operand: bare/dotted names,
+        # subscripted generics, None — vs. int/set literals whose bitwise-or
+        # is fine on 3.9. May over-flag runtime set union of two Names;
+        # acceptable for linting this one source file.
+        if isinstance(node, ast.Constant):
+            return node.value is None
+        if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
+            return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return _typeish(node.left) or _typeish(node.right)
+        return False
+
     for node in ast.walk(tree):
         if type(node).__name__ in ("Match", "MatchCase"):
             violations.append("match statement")
-        ann = getattr(node, "annotation", None)
-        if ann is not None:
-            annotation_roots.append(ann)
-        if type(node).__name__ in ("FunctionDef", "AsyncFunctionDef") and node.returns is not None:
-            annotation_roots.append(node.returns)
-    for ann in annotation_roots:
-        for sub in ast.walk(ann):
-            if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.BitOr):
-                violations.append("PEP 604 union in annotation")
+        # PEP 604 unions — in annotations AND at runtime (T = int | None,
+        # isinstance(x, int | str)): parse fine everywhere, break at runtime
+        # on 3.9, so both shapes are denied.
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            if _typeish(node.left) and _typeish(node.right):
+                violations.append("PEP 604 union (annotation or runtime)")
     for needle in ("itertools.pairwise", "pairwise(", "aiter(", "anext(", "bit_count(", "strict=True)"):
         if needle in src:
             violations.append(f"3.10+ stdlib usage: {needle}")
@@ -399,8 +409,13 @@ def test_py310_detector_catches_known_constructs():
     assert _py310_violations(
         "with (open('a') as f,\n      open('b') as g):\n    pass\n"
     )
+    # runtime PEP 604 unions — parse fine everywhere, TypeError at runtime
+    # on 3.9; the likeliest real breakage shape.
+    assert _py310_violations("T = int | None\n")
+    assert _py310_violations("def f(x):\n    return isinstance(x, int | str)\n")
     # and it must pass clean 3.9 code
     assert _py310_violations("def f(a):\n    return a or None\n") == []
+    assert _py310_violations("FLAGS = 1 | 2\n") == []  # int bitwise-or is fine
 
 
 def test_stop_output_is_ascii_safe(monkeypatch, tmp_path):
