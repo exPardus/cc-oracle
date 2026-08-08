@@ -141,7 +141,35 @@ def test_flush_race_rereads_late_assistant_text(tmp_path, monkeypatch):
 
     def flush_lands(_seconds):
         _write_transcript(tmp_path, late)
-    monkeypatch.setattr(oracle_hook.time, "sleep", flush_lands)
+    monkeypatch.setattr(oracle_hook, "_sleep", flush_lands)
+
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": path, "stop_hook_active": False})
+    code, out = run_stop(payload)
+    assert code == 0
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_flush_race_catches_text_landing_on_the_final_retry(tmp_path, monkeypatch):
+    # Pins the retry budget as SUFFICIENT, not merely bounded: text that lands
+    # only on the last scheduled wait must still be caught. Without this, a
+    # future trim of _FLUSH_DELAYS would silently reopen the race that the
+    # other two tests keep passing through.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    thinking_only = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "hmm"}]}}
+    early = [_user_prompt("trigger it"), thinking_only]
+    late = early + [_assistant_text("I'm stuck. This one crawled onto disk.")]
+    path = _write_transcript(tmp_path, early)
+
+    waits = []
+
+    def flush_lands_last(seconds):
+        waits.append(seconds)
+        if len(waits) == len(oracle_hook._FLUSH_DELAYS):
+            _write_transcript(tmp_path, late)
+    monkeypatch.setattr(oracle_hook, "_sleep", flush_lands_last)
 
     payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
                           "transcript_path": path, "stop_hook_active": False})
@@ -156,14 +184,26 @@ def test_flush_retry_is_bounded_and_fails_open(tmp_path, monkeypatch):
     _isolate_state(monkeypatch, tmp_path)
     import oracle_hook
     sleeps = []
-    monkeypatch.setattr(oracle_hook.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(oracle_hook, "_sleep", lambda s: sleeps.append(s))
     entries = [
         _user_prompt("x"),
         {"type": "assistant", "message": {"role": "assistant", "content": [
             {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}},
     ]
     assert run_stop(_payload(tmp_path, entries)) == (0, "")
-    assert len(sleeps) == oracle_hook._FLUSH_RETRIES
+    assert sleeps == list(oracle_hook._FLUSH_DELAYS)
+
+
+def test_flush_delays_back_off_and_stay_within_budget():
+    # The schedule itself is the fix, so assert on it directly. The incident
+    # measured ~50ms of lag under contention; a budget only a few multiples
+    # above that reopens the race on a slower disk, and an unbounded one
+    # stalls every text-less turn. Strictly increasing waits spend the early
+    # retries cheaply and the late ones where the lag actually lives.
+    import oracle_hook
+    delays = oracle_hook._FLUSH_DELAYS
+    assert list(delays) == sorted(set(delays)), "waits must strictly increase"
+    assert 0.3 <= sum(delays) <= 1.0, "total wait outside the 300ms-1s budget"
 
 
 def test_no_retry_when_turn_already_has_text(tmp_path, monkeypatch):
@@ -171,7 +211,7 @@ def test_no_retry_when_turn_already_has_text(tmp_path, monkeypatch):
     _isolate_state(monkeypatch, tmp_path)
     import oracle_hook
     sleeps = []
-    monkeypatch.setattr(oracle_hook.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(oracle_hook, "_sleep", lambda s: sleeps.append(s))
     payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("Done. Tests pass.")])
     assert run_stop(payload) == (0, "")
     assert sleeps == []

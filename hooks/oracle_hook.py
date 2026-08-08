@@ -434,11 +434,17 @@ def _record_block(session_id, prompt_id, cfg=None):
                 pass
 
 
-# Flush-race re-reads: worst case adds _FLUSH_RETRIES * _FLUSH_DELAY_SECONDS
-# (150ms) to turns that genuinely end without assistant text — rare, and far
-# cheaper than silently missing a stuck turn.
-_FLUSH_RETRIES = 3
-_FLUSH_DELAY_SECONDS = 0.05
+# Flush-race re-reads: backoff schedule, worst case adds sum(_FLUSH_DELAYS)
+# (350ms) to turns that genuinely end without assistant text — rare, and far
+# cheaper than silently missing a stuck turn. The live incident measured ~50ms
+# of lag while 7 Stop hooks ran concurrently, and contention is exactly what
+# inflates flush lag, so that figure is a floor rather than a typical case —
+# the budget has to clear it by more than a small multiple.
+_FLUSH_DELAYS = (0.05, 0.1, 0.2)
+
+# Indirection so tests can stub the delay without mutating the stdlib `time`
+# module, which is process-wide shared state under a parallel test runner.
+_sleep = time.sleep
 
 
 def run_stop(stdin_text):
@@ -470,13 +476,18 @@ def run_stop(stdin_text):
         # file, so a stuck turn was waved through). No assistant text in the
         # current turn is exactly that signature — wait briefly and re-read,
         # bounded, then fail open as before.
-        for _ in range(_FLUSH_RETRIES):
+        for delay in _FLUSH_DELAYS:
             if last_assistant_text(entries):
                 break
-            time.sleep(_FLUSH_DELAY_SECONDS)
+            _sleep(delay)
             entries = load_entries(transcript_path)
             if not entries:
                 return 0, ""
+            # Recomputing the turn boundary here is deliberate: if the user
+            # started a new turn during the wait, this slice moves past the old
+            # one and the stuck statement goes unnudged. That is the fail-open
+            # direction and must stay that way — pinning the original boundary
+            # would let a stale turn block a fresh prompt.
             entries = entries[_turn_start(entries):]
         if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
             return 0, ""
