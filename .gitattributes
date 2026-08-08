@@ -1,0 +1,9 @@
+# The committed hook binaries ARE the shipped artifact. Any line-ending
+# translation corrupts them into something that will not execute, and the
+# failure is silent: the dispatch chain just falls through to the next entry.
+# Git detects them as binary today; this makes it explicit rather than lucky.
+hooks/bin/** binary
+
+# A shell script checked out with CRLF fails on a Unix shell, which reads the
+# carriage return as part of the interpreter path.
+*.sh text eol=lf
