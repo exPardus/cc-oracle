@@ -561,6 +561,24 @@ def run_session_start(stdin_text=""):
     return 0, json.dumps(envelope)
 
 
+def _read_stdin():
+    """Read stdin as bytes and decode UTF-8 explicitly.
+
+    sys.stdin applies the locale encoding, which for a piped handle on Windows
+    is typically cp1252. A UTF-8 BOM then arrives as three mojibake characters
+    rather than U+FEFF, run_stop's lstrip never matches it, and json.loads
+    rejects a perfectly good payload — so the hook did nothing on exactly the
+    platform whose BOM it set out to tolerate. Reading the binary buffer takes
+    the locale out of the path entirely.
+    """
+    try:
+        return sys.stdin.buffer.read().decode("utf-8", "replace")
+    except (AttributeError, OSError, ValueError):
+        # No .buffer (a substituted stdin) or an unreadable pipe: fall back and
+        # let main()'s handler deal with anything that still goes wrong.
+        return sys.stdin.read()
+
+
 def main(argv):
     # Hook entry point: nothing may escape — an uncaught exception exits
     # nonzero and surfaces noise (or worse) in the session.
@@ -569,9 +587,9 @@ def main(argv):
             return 0
         mode = argv[1] if len(argv) > 1 else ""
         if mode == "session-start":
-            code, out = run_session_start(sys.stdin.read())
+            code, out = run_session_start(_read_stdin())
         elif mode == "stop":
-            code, out = run_stop(sys.stdin.read())
+            code, out = run_stop(_read_stdin())
         else:
             return 0
         if out:

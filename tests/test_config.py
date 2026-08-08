@@ -16,6 +16,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 import oracle_hook
@@ -124,12 +126,33 @@ def test_config_adds_and_removes_markers(monkeypatch, tmp_path):
 
 
 def test_malformed_config_ignored(monkeypatch, tmp_path):
+    # Must write to the path load_config() actually reads. This previously
+    # wrote under tmp_path/"plugin-data" while _isolate points the data dir at
+    # tmp_path/"oracle", so no config file existed at the real location: the
+    # test only re-proved the defaults and never reached the parse-failure
+    # branch it is named for. Derive the path from _config_path() so the two
+    # cannot drift apart again.
     _isolate(monkeypatch, tmp_path)
-    d = tmp_path / "plugin-data" / "oracle-state"
-    d.mkdir(parents=True)
-    (d / "config.json").write_text("{not json", encoding="utf-8")
+    p = Path(_config_path())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{not json", encoding="utf-8")
+    assert p.exists(), "fixture must write to the path load_config() reads"
     cfg = load_config()
     assert cfg["stop_hook"] is True
+    assert effective_markers(cfg) == set(MARKERS)
+
+
+@pytest.mark.parametrize("body", ["[1, 2, 3]", "42", "null", '""', "true"])
+def test_non_object_config_ignored(monkeypatch, tmp_path, body):
+    # A well-formed JSON document that is not an object must also fall back to
+    # defaults rather than raising.
+    _isolate(monkeypatch, tmp_path)
+    p = Path(_config_path())
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body, encoding="utf-8")
+    cfg = load_config()
+    assert cfg["stop_hook"] is True
+    assert cfg["doctrine"] is True
     assert effective_markers(cfg) == set(MARKERS)
 
 
