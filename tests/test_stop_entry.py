@@ -4,9 +4,21 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
 
 from oracle_hook import run_stop, run_session_start, DOCTRINE, _state_path, _record_block, _already_blocked
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    # Every test whose turn ends without assistant text walks the full
+    # flush-retry budget, so without this the suite burns that budget in real
+    # wall clock — and silently grows slower each time the budget is widened.
+    # Tests that care about the waits re-stub _sleep themselves.
+    import oracle_hook
+    monkeypatch.setattr(oracle_hook, "_sleep", lambda _seconds: None)
 
 
 def _write_transcript(tmp_path, entries):
@@ -148,6 +160,88 @@ def test_flush_race_rereads_late_assistant_text(tmp_path, monkeypatch):
     code, out = run_stop(payload)
     assert code == 0
     assert json.loads(out)["decision"] == "block"
+
+
+def test_flush_race_fires_when_the_turn_opened_with_a_preamble(tmp_path, monkeypatch):
+    # The shape that matters: a real agentic turn opens with a preamble text
+    # block before its tool calls. A retry probe that asks "does this turn have
+    # any assistant text" is satisfied by that preamble, breaks out with zero
+    # re-reads, and judges the turn on stale text while the real final message
+    # is still in flight — the exact race this hook exists to close, sailing
+    # straight through on the COMMON turn shape rather than the rare one.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    early = [
+        _user_prompt("fix the mock"),
+        _assistant_text("Let me look at this."),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "pytest"}}]}},
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "1 failed"}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "hmm"}]}},
+    ]
+    late = early + [_assistant_text("I'm stuck. The mock never fires.")]
+    path = _write_transcript(tmp_path, early)
+
+    def flush_lands(_seconds):
+        _write_transcript(tmp_path, late)
+    monkeypatch.setattr(oracle_hook, "_sleep", flush_lands)
+
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": path, "stop_hook_active": False})
+    code, out = run_stop(payload)
+    assert code == 0
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_flush_retry_survives_a_torn_re_read(tmp_path, monkeypatch):
+    # A re-read that lands mid-write returns no entries (locked file on
+    # Windows, or every line torn). That is the condition the retry exists to
+    # ride out, so it must spend the next delay rather than abandon the budget.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    thinking_only = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "hmm"}]}}
+    early = [_user_prompt("trigger it"), thinking_only]
+    late = early + [_assistant_text("I'm stuck. That read was torn.")]
+    path = _write_transcript(tmp_path, early)
+
+    waits = []
+
+    def torn_then_flushed(seconds):
+        waits.append(seconds)
+        if len(waits) == 1:
+            Path(path).write_text("", encoding="utf-8")   # torn / mid-write
+        else:
+            _write_transcript(tmp_path, late)
+    monkeypatch.setattr(oracle_hook, "_sleep", torn_then_flushed)
+
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": path, "stop_hook_active": False})
+    code, out = run_stop(payload)
+    assert code == 0
+    assert json.loads(out)["decision"] == "block"
+    assert len(waits) == 2, "torn read must cost one delay, not the whole budget"
+
+
+def test_flush_retry_stays_silent_on_keyboard_interrupt(tmp_path, monkeypatch):
+    # KeyboardInterrupt is a BaseException, so the hook's `except Exception`
+    # does not catch it: Ctrl+C during the wait would traceback and exit
+    # nonzero, and hooks.json turns a nonzero exit into a re-run of the hook.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+
+    def interrupted(_seconds):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(oracle_hook, "_sleep", interrupted)
+
+    entries = [
+        _user_prompt("x"),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "hmm"}]}},
+    ]
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
 
 
 def test_flush_race_catches_text_landing_on_the_final_retry(tmp_path, monkeypatch):
