@@ -1,0 +1,22 @@
+{"in": "", "out": "\"\""}
+{"in": "hello", "out": "\"hello\""}
+{"in": "I'm stuck.", "out": "\"I'm stuck.\""}
+{"in": "em \u2014 dash", "out": "\"em \\u2014 dash\""}
+{"in": "<oracle-plugin>", "out": "\"<oracle-plugin>\""}
+{"in": "a & b", "out": "\"a & b\""}
+{"in": "tag <b>bold</b> & more", "out": "\"tag <b>bold</b> & more\""}
+{"in": "quote \" and backslash \\", "out": "\"quote \\\" and backslash \\\\\""}
+{"in": "\n\t\r", "out": "\"\\n\\t\\r\""}
+{"in": "\b\f", "out": "\"\\b\\f\""}
+{"in": "\u0000\u0001\u001f", "out": "\"\\u0000\\u0001\\u001f\""}
+{"in": "\u007f", "out": "\"\\u007f\""}
+{"in": "\u001e\u001f", "out": "\"\\u001e\\u001f\""}
+{"in": "caf\u00e9", "out": "\"caf\\u00e9\""}
+{"in": "\u65e5\u672c\u8a9e", "out": "\"\\u65e5\\u672c\\u8a9e\""}
+{"in": "\u0130", "out": "\"\\u0130\""}
+{"in": "\ud835\udd4f", "out": "\"\\ud835\\udd4f\""}
+{"in": "\ud83d\ude00 emoji", "out": "\"\\ud83d\\ude00 emoji\""}
+{"in": "mixed \u2014 \ud835\udd4f \u007f end", "out": "\"mixed \\u2014 \\ud835\\udd4f \\u007f end\""}
+{"in": "\u00a0nbsp", "out": "\"\\u00a0nbsp\""}
+{"in": "\u2028\u2029", "out": "\"\\u2028\\u2029\""}
+{"in": "slash / not escaped", "out": "\"slash / not escaped\""}
