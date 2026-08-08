@@ -306,6 +306,31 @@ def last_assistant_text(entries):
     return ""
 
 
+def _turn_tail_flushed(entries):
+    """True when the turn's LAST assistant entry carries text.
+
+    This is the flush-race probe, and it deliberately does NOT ask "does this
+    turn have any assistant text". Almost every agentic turn opens with a
+    preamble ("Let me look at this.") before its tool calls, so an any-text
+    probe is satisfied by that preamble and the hook proceeds on stale text
+    while the turn's real final message is still in flight.
+
+    An unflushed tail has a specific shape: a trailing assistant entry holding
+    only thinking or tool_use blocks. Scanning back to the last assistant entry
+    and asking whether IT carries text catches that, and still short-circuits
+    on the common case where the final text is already on disk.
+    """
+    for entry in reversed(entries):
+        if entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return bool(content.strip())
+        return any(b.get("type") == "text" and (b.get("text") or "").strip()
+                   for b in _content_blocks(entry))
+    return False
+
+
 def _is_real_user_prompt(entry):
     if entry.get("type") != "user":
         return False
@@ -434,6 +459,20 @@ def _record_block(session_id, prompt_id, cfg=None):
                 pass
 
 
+# Flush-race re-reads: backoff schedule, worst case adds sum(_FLUSH_DELAYS)
+# (350ms, and more like 400ms on Windows, whose ~15.6ms timer granularity
+# rounds every sleep up) to turns that genuinely end without assistant text —
+# rare, and far cheaper than silently missing a stuck turn. The live incident
+# measured ~50ms of lag while 7 Stop hooks ran concurrently, and contention is
+# exactly what inflates flush lag, so that figure is a floor rather than a
+# typical case — the budget has to clear it by more than a small multiple.
+_FLUSH_DELAYS = (0.05, 0.1, 0.2)
+
+# Indirection so tests can stub the delay without mutating the stdlib `time`
+# module, which is process-wide shared state under a parallel test runner.
+_sleep = time.sleep
+
+
 def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
@@ -457,6 +496,35 @@ def run_stop(stdin_text):
         # Scan the CURRENT turn only: a stuck statement from a previous turn
         # was already stop-checked and must not retrigger.
         entries = entries[_turn_start(entries):]
+        # Flush race: the harness can fire Stop hooks before the turn's final
+        # assistant text hits the disk (live incident: only a thinking-block
+        # entry was flushed; the text landed ~50ms after this hook read the
+        # file, so a stuck turn was waved through). An unflushed tail is the
+        # signature — see _turn_tail_flushed for why the probe is the turn's
+        # LAST assistant entry and not "any text in the turn". Wait and
+        # re-read on a bounded backoff, then fail open as before.
+        for delay in _FLUSH_DELAYS:
+            if _turn_tail_flushed(entries):
+                break
+            try:
+                _sleep(delay)
+            except KeyboardInterrupt:
+                # KeyboardInterrupt is a BaseException, so the outer handler
+                # would not catch it: Ctrl+C during the wait would print a
+                # traceback and exit nonzero, which hooks.json turns into a
+                # full re-run of the hook. Stay silent instead.
+                return 0, ""
+            fresh = load_entries(transcript_path)
+            # An empty re-read means a torn or locked file mid-write — exactly
+            # what the retry exists to ride out. Keep the entries we already
+            # have and spend the next delay rather than abandoning the budget.
+            if fresh:
+                # Recomputing the turn boundary is deliberate: if the user
+                # started a new turn during the wait, this slice moves past the
+                # old one and the stuck statement goes unnudged. That is the
+                # fail-open direction and must stay that way — pinning the
+                # original boundary would let a stale turn block a fresh prompt.
+                entries = fresh[_turn_start(fresh):]
         if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
             return 0, ""
         if oracle_consulted_this_turn(entries):
