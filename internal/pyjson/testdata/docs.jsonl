@@ -1,0 +1,6 @@
+{"doc": {"decision": "block", "reason": "short"}, "out": "{\"decision\": \"block\", \"reason\": \"short\"}"}
+{"doc": {"a": 1, "b": true, "c": null}, "out": "{\"a\": 1, \"b\": true, \"c\": null}"}
+{"doc": {"nested": {"x": "y"}}, "out": "{\"nested\": {\"x\": \"y\"}}"}
+{"doc": {"list": [1, "two", null, false]}, "out": "{\"list\": [1, \"two\", null, false]}"}
+{"doc": {"empty_list": [], "empty_obj": {}}, "out": "{\"empty_list\": [], \"empty_obj\": {}}"}
+{"doc": {"esc": "em \u2014 dash <tag> \"q\""}, "out": "{\"esc\": \"em \\u2014 dash <tag> \\\"q\\\"\"}"}
