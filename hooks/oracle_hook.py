@@ -434,6 +434,13 @@ def _record_block(session_id, prompt_id, cfg=None):
                 pass
 
 
+# Flush-race re-reads: worst case adds _FLUSH_RETRIES * _FLUSH_DELAY_SECONDS
+# (150ms) to turns that genuinely end without assistant text — rare, and far
+# cheaper than silently missing a stuck turn.
+_FLUSH_RETRIES = 3
+_FLUSH_DELAY_SECONDS = 0.05
+
+
 def run_stop(stdin_text):
     """Returns (exit_code, stdout). Failure posture: (0, "") on anything unexpected."""
     try:
@@ -457,6 +464,20 @@ def run_stop(stdin_text):
         # Scan the CURRENT turn only: a stuck statement from a previous turn
         # was already stop-checked and must not retrigger.
         entries = entries[_turn_start(entries):]
+        # Flush race: the harness can fire Stop hooks before the turn's final
+        # assistant text hits the disk (live incident: only a thinking-block
+        # entry was flushed; the text landed ~50ms after this hook read the
+        # file, so a stuck turn was waved through). No assistant text in the
+        # current turn is exactly that signature — wait briefly and re-read,
+        # bounded, then fail open as before.
+        for _ in range(_FLUSH_RETRIES):
+            if last_assistant_text(entries):
+                break
+            time.sleep(_FLUSH_DELAY_SECONDS)
+            entries = load_entries(transcript_path)
+            if not entries:
+                return 0, ""
+            entries = entries[_turn_start(entries):]
         if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
             return 0, ""
         if oracle_consulted_this_turn(entries):

@@ -125,6 +125,58 @@ def test_stale_marker_from_previous_turn_does_not_block(tmp_path, monkeypatch):
     assert run_stop(_payload(tmp_path, entries)) == (0, "")
 
 
+def test_flush_race_rereads_late_assistant_text(tmp_path, monkeypatch):
+    # Live incident (macOS, 7 concurrent Stop hooks): at Stop time the harness
+    # had flushed only a thinking-block entry; the final text landed on disk
+    # milliseconds after the hook read the transcript, so a genuinely stuck
+    # turn was waved through. When the current turn has no assistant text yet,
+    # the hook must wait briefly and re-read instead of staying silent.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    thinking_only = {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "hmm"}]}}
+    early = [_user_prompt("trigger it"), thinking_only]
+    late = early + [_assistant_text("I'm stuck. The final text arrived late.")]
+    path = _write_transcript(tmp_path, early)
+
+    def flush_lands(_seconds):
+        _write_transcript(tmp_path, late)
+    monkeypatch.setattr(oracle_hook.time, "sleep", flush_lands)
+
+    payload = json.dumps({"session_id": _fresh_session(), "prompt_id": "p-1",
+                          "transcript_path": path, "stop_hook_active": False})
+    code, out = run_stop(payload)
+    assert code == 0
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_flush_retry_is_bounded_and_fails_open(tmp_path, monkeypatch):
+    # A turn that truly ends without assistant text (tool_use only) must stay
+    # silent after a BOUNDED number of re-reads — never spin, never block.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    sleeps = []
+    monkeypatch.setattr(oracle_hook.time, "sleep", lambda s: sleeps.append(s))
+    entries = [
+        _user_prompt("x"),
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]}},
+    ]
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+    assert len(sleeps) == oracle_hook._FLUSH_RETRIES
+
+
+def test_no_retry_when_turn_already_has_text(tmp_path, monkeypatch):
+    # The common path — text present on first read — must not pay any latency.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    sleeps = []
+    monkeypatch.setattr(oracle_hook.time, "sleep", lambda s: sleeps.append(s))
+    payload = _payload(tmp_path, [_user_prompt("fix it"), _assistant_text("Done. Tests pass.")])
+    assert run_stop(payload) == (0, "")
+    assert sleeps == []
+
+
 def test_session_start_emits_additional_context_envelope():
     code, out = run_session_start()
     assert code == 0
