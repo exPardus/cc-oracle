@@ -1,40 +1,193 @@
-# cc-oracle
+<h1 align="center">cc-oracle</h1>
 
-A weaker (or any) model consults a best-model, read-only oracle the moment it's unsure or stuck, instead of flailing solo — fewer wasted tokens, better code.
+<p align="center">
+  <strong>A Claude Code plugin that stops your session from flailing.</strong><br>
+  The moment a session is unsure or stuck, it consults a read-only, best-model oracle and implements the plan it gets back.
+</p>
 
-## How it works
-
-- **Doctrine** — a `SessionStart` hook injects a small standing instruction (via `additionalContext`): the moment a session notices it's unsure, stuck, confused, or going in circles, it should stop and consult the `oracle` agent with a full brief before attempting solo.
-- **Oracle agent** — `agents/oracle.md` runs on the `fable` model alias, with read-only tools (`Read`, `Grep`, `Glob`; no `Bash`, `Edit`, or `Write`). It enforces a full-brief contract, investigates the codebase itself, and returns a diagnosis and plan for the caller to implement.
-- **Stop-hook safety net** — a conservative marker check on the final assistant message of each turn, catching cases where the model states uncertainty (e.g. `"I'm not sure"`, `"I'm stuck"`, `"can't figure out"`) without having consulted the oracle. It suppresses questions posed to the user, text inside code fences/blockquotes/inline code/double quotes, and anything already covered by an oracle consult this turn; it blocks at most once per turn and fails open (silently) on any parse error or unexpected input.
-- **Behavioral trigger** — a turn where **three consecutive tool calls fail** is nudged even if the model never said it was stuck. Read-only lookups (`Read`, `Glob`, `Grep`, `LS`) are excluded, because a run of those failing is a model hunting for a file rather than stalling; a successful call resets the count. Every suppression above still applies, including the question exemption. The threshold was set by measuring 1,741 real turns: 3+ consecutive non-probe failures occur in 0.34% of them, while looser signals (any 3 failures, or the same tool repeated) fire on 3-11% and would mostly catch ordinary iterative work.
-
-## Install
+<p align="center">
+  <a href="https://github.com/exPardus/cc-oracle/releases"><img alt="Release" src="https://img.shields.io/github/v/release/exPardus/cc-oracle?label=release"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/exPardus/cc-oracle"></a>
+  <img alt="Platforms" src="https://img.shields.io/badge/platforms-windows%20%7C%20macos%20%7C%20linux-blue">
+  <img alt="Runtime dependencies: none" src="https://img.shields.io/badge/runtime%20deps-none-success">
+</p>
 
 ```
 /plugin marketplace add exPardus/cc-oracle
 /plugin install oracle@cc-oracle
 ```
 
-CLI variant:
+That is the whole setup. Nothing to configure, nothing to run, no Python or Node required.
+
+## Why
+
+Every agentic coding session hits a wall sometimes: a test that will not pass, an error it cannot place, a fix that keeps almost working. Left alone, a model keeps trying. Each attempt adds noise to its own context, and the tenth attempt is being made by a model that is now reasoning over nine failures. Tokens burn, and the code gets worse.
+
+cc-oracle changes the default. When a session notices it is unsure, it stops and sends a structured brief to the **oracle**: a fresh-context subagent on the best available model, restricted to read-only tools. The oracle reads the actual code, diagnoses the root cause, and hands back a numbered plan. The original session implements it.
+
+This makes a cheap main model plus an on-demand expensive consultant a workable setup. Run your day-to-day session on a smaller model and pay for the best one only at the moments that need it. Strong models benefit too: a second opinion from a context that has not been polluted by the dead ends.
+
+## Install
+
+**Requirement:** Claude Code with plugin support. Type `/plugin` in a session; if it is not recognized, [update Claude Code](https://code.claude.com/docs/en/setup) first.
+
+### 1. Add the marketplace
+
+Inside a Claude Code session:
 
 ```
+/plugin marketplace add exPardus/cc-oracle
+```
+
+This registers this repository as a plugin catalog. Nothing is installed yet.
+
+### 2. Install the plugin
+
+```
+/plugin install oracle@cc-oracle
+```
+
+Claude Code opens the plugin's details and asks for a scope:
+
+| Scope | Effect |
+|---|---|
+| **User** (recommended) | Active in every project on this machine, just for you |
+| **Project** | Active for everyone who opens this repository; written to `.claude/settings.json` |
+| **Local** | Active for you in this repository only |
+
+The install summary ends with either `Plugin is now active.` or `Run /reload-plugins to activate.` Do what it says.
+
+### 3. Check it took
+
+```
+/plugin list
+```
+
+`oracle@cc-oracle` should be listed and enabled. In a new session, typing `@oracle:oracle` should autocomplete the agent.
+
+### Other ways to install
+
+**From a shell, without opening a session** (installs to user scope unless you pass `--scope user|project|local`; the plugin loads at the next launch):
+
+```sh
+claude plugin marketplace add exPardus/cc-oracle
 claude plugin install oracle@cc-oracle
 ```
 
-Local-directory variant (for development or before publishing):
+**For a whole team**, commit this to the project's `.claude/settings.json`. Claude Code registers the marketplace for anyone who trusts the folder and tells them the exact `claude plugin install` command to run to fetch the plugin:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "cc-oracle": {
+      "source": { "source": "github", "repo": "exPardus/cc-oracle" }
+    }
+  },
+  "enabledPlugins": {
+    "oracle@cc-oracle": true
+  }
+}
+```
+
+**From a local clone**, for hacking on the plugin itself:
+
+```sh
+git clone https://github.com/exPardus/cc-oracle.git
+claude --plugin-dir ./cc-oracle
+```
+
+### Update, disable, remove
+
+Third-party marketplaces do not auto-update by default. To pick up a new release:
 
 ```
-/plugin marketplace add ./cc-oracle
+/plugin marketplace update cc-oracle
+/reload-plugins
 ```
 
-## Usage
+To switch it on or off without uninstalling:
 
-Nothing to do manually — once installed, the doctrine and Stop-hook are active in every session. A typical consult looks like this: the main model dispatches the `oracle` agent with a brief covering Goal, Problem, Tried, Context, and Question; the oracle reads the relevant code, diagnoses the root cause, and returns a concrete plan; the main model implements it.
+```
+/plugin disable oracle@cc-oracle
+/plugin enable oracle@cc-oracle
+```
 
-This applies at any model tier — a strong model can consult the oracle too, for a fresh-context second opinion.
+To remove it entirely:
+
+```
+/plugin uninstall oracle@cc-oracle
+```
+
+You can also enable auto-update for this marketplace from `/plugin` → **Marketplaces** → **cc-oracle**.
+
+## What you get
+
+Four pieces, all active the moment the plugin is enabled.
+
+**1. Doctrine.** A `SessionStart` hook injects a short standing instruction into every session. This is the text, verbatim:
+
+> Uncertainty is a signal, not a failure. The moment you notice you are unsure, stuck, confused, or going in circles: do NOT keep attempting solo and pollute your context — dispatch the `oracle` agent first, then implement its plan yourself.
+>
+> When summoning the oracle, ALWAYS send a full brief: Goal (what the task ultimately wants), Problem (the exact blocker, errors quoted verbatim), Tried (attempts made + why each failed), Context (relevant files/paths, versions, platform, project rules), Question (the specific ask, not "help"). The oracle shares none of your context — a thin brief wastes the consult and forces a second round-trip.
+>
+> If the dispatch errors for any reason, retry the same Agent call once with model "opus".
+>
+> This applies at every tier: strong models may consult the oracle for a fresh-context second opinion.
+
+**2. The oracle agent.** [`agents/oracle.md`](agents/oracle.md) defines a subagent that runs on the `fable` model alias with `Read`, `Grep`, and `Glob` only. No `Bash`, no `Edit`, no `Write`: it cannot change anything, so a consult is always safe. It verifies the brief against the code itself rather than trusting the caller's account, and answers in a fixed shape: **Diagnosis** with file:line evidence, a numbered **Plan**, and any real **Pitfalls**.
+
+**3. A safety net for forgetting.** A `Stop` hook checks the final message of each turn. If the model said something like `"I'm not sure"`, `"I'm stuck"`, or `"can't figure out"` and did not consult the oracle that turn, the turn is blocked once with a nudge that quotes the model's own words:
+
+```
+You stated uncertainty this turn without consulting the oracle: "I'm not sure why the test still fails". Dispatch the `oracle` agent now with a full brief — Goal, Problem (errors verbatim), Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) — then implement its plan.
+```
+
+The check is deliberately conservative. It ignores questions addressed to you, anything inside code fences, blockquotes, inline code, or double quotes, and anything already covered by a consult. It fires at most once per turn and fails open on any parse error: a hook must never wedge a session.
+
+**4. A trigger for silent stalling.** A model that never admits it is stuck still leaves a trail: tool calls that keep failing. Three consecutive failing tool calls in one turn earn the same nudge. Read-only lookups (`Read`, `Glob`, `Grep`, `LS`) do not count, since a run of those failing is a model hunting for a file, and any successful call resets the count. The threshold came from measuring 1,741 real turns; see [`docs/development.md`](docs/development.md) for the numbers.
+
+## What a consult looks like
+
+The main session dispatches the oracle with a brief like this:
+
+```
+Goal: make `pytest tests/test_billing.py` pass after the invoice refactor.
+Problem: test_prorate_mid_month fails with
+  AssertionError: assert Decimal('12.90') == Decimal('12.91')
+Tried: rounding at the end (still off by one cent), rounding each line
+  item (breaks two other tests), ROUND_HALF_EVEN instead of ROUND_HALF_UP
+  (no change).
+Context: billing/prorate.py, billing/invoice.py; Python 3.12; repo rule:
+  money is always Decimal, never float.
+Question: where is the cent being lost, and which rounding point is correct
+  for all three tests?
+```
+
+And the oracle answers in its fixed shape:
+
+```
+**Diagnosis** — `prorate.py:41` divides by `days_in_month` as an int, which
+Python promotes to Decimal fine, but `days_used` on line 38 comes from
+`(end - start).days / 30` — a float — so the ratio is a float before it ever
+meets a Decimal. The cent is lost there, not at rounding.
+
+**Plan**
+1. `prorate.py:38`: build the ratio as `Decimal(days_used) / Decimal(days_in_month)`.
+2. Remove the per-line rounding added in the last attempt; keep the single
+   `quantize` at `invoice.py:77`.
+3. Run `pytest tests/test_billing.py -q`; all three prorate tests share this path.
+
+**Pitfalls** — `Decimal(0.1)` and `Decimal("0.1")` differ; construct from int
+or str, never from the float.
+```
+
+The session then implements the plan. The example is illustrative; the shape is exactly what the agent definition enforces.
+
+You can also consult on demand. Mention `@oracle:oracle` in a prompt, or ask Claude to "consult the oracle" about anything. The brief contract still applies.
 
 ## The brief contract
+
+A consult is only as good as its brief. The oracle shares none of the caller's conversation, so every field below matters:
 
 - **Goal** — what the task ultimately wants
 - **Problem** — the exact blocker, errors quoted verbatim
@@ -42,9 +195,11 @@ This applies at any model tier — a strong model can consult the oracle too, fo
 - **Context** — relevant files/paths, versions, platform, project rules
 - **Question** — the specific ask, not `"help"`
 
+If Goal, Tried, or the verbatim error is missing, the oracle asks for them in its first line and still answers as well as it can with what it has.
+
 ## Model selection
 
-The oracle runs on the `fable` model alias, resolved per provider (Anthropic API, Bedrock, Vertex) — never a hardcoded model ID. Per official docs, an alias unavailable on the caller's plan/provider falls back silently to the session's own (inherited) model; no error reaches the caller. Separately, if the oracle *dispatch itself* errors, the doctrine instructs one retry of the same call with `model: opus`.
+The oracle runs on the `fable` model alias, resolved per provider (Anthropic API, Bedrock, Vertex) rather than a hardcoded model ID. If that alias is unavailable on your plan or provider, Claude Code falls back silently to the session's own model; you still get the fresh-context, read-only second opinion, just not from a bigger model. Separately, if the oracle *dispatch itself* errors, the doctrine instructs one retry of the same call with `model: opus`.
 
 ## Configuration
 
@@ -54,9 +209,9 @@ Optional, file-based, fail-open. One file, plugin-local:
 <CLAUDE_PLUGIN_DATA>/oracle-state/config.json
 ```
 
-(falling back to `<OS temp dir>/oracle-state/config.json` when `CLAUDE_PLUGIN_DATA` is unset — the exact same base-dir resolution the hook uses for its per-turn state, so the location is environment-independent: no cwd, no HOME involved).
+(falling back to `<OS temp dir>/oracle-state/config.json` when `CLAUDE_PLUGIN_DATA` is unset — the same base-dir resolution the hook uses for its per-turn state, so the location is environment-independent: no cwd, no HOME involved).
 
-Schema — every key optional; **zero config reproduces v1 behavior exactly**:
+Every key is optional; **zero config reproduces the default behavior exactly**:
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
@@ -67,7 +222,7 @@ Schema — every key optional; **zero config reproduces v1 behavior exactly**:
 | `state_dir` | string | unset | relocates the per-turn block-state files (config file location itself never moves) |
 | `failure_streak` | int | `3` | consecutive failing tool calls that trigger a nudge on their own; `0` disables the behavioral trigger |
 
-Worked example — quieter hook for a repo where "I'm confused" shows up in legitimate prose, plus one project-specific marker and state on a RAM disk:
+Worked example — a quieter hook for a repo where "I'm confused" shows up in legitimate prose, plus one project-specific marker and state on a RAM disk:
 
 ```json
 {
@@ -81,53 +236,35 @@ Worked example — quieter hook for a repo where "I'm confused" shows up in legi
 
 Environment kill-switch: `CC_ORACLE_DISABLE=1` (also `true`/`yes`) silences both hooks — useful in CI.
 
-Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply — configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win); only an explicit, well-formed `false` turns anything off.
+Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply. Configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win); only an explicit, well-formed `false` turns anything off.
 
-There is no log-verbosity knob: the hook has no logging today, and the config surface only exposes behavior the code actually has.
+## FAQ
 
-## Performance
+**Does this cost more?**
+A consult is one call to a top-tier model that reads your code and writes a plan. That is not free, but it replaces the thing that is expensive: a long tail of failed attempts in a context that keeps growing. The oracle never runs a loop of its own, never edits, and is only invoked when the session is already stuck.
 
-The Stop hook runs at the end of every turn, so its cost is paid constantly and
-is pure latency between a turn finishing and the session continuing. That is why
-the implementation is compiled.
+**Will it nag me?**
+It nudges the *model*, not you. The Stop hook fires at most once per turn, only on explicit first-person uncertainty or three consecutive tool failures, and never on a question the model is asking you. In practice most turns never see it; the doctrine does the work and the hook catches forgetting.
 
-Median of 15 runs, Windows 10, same inputs driven through both implementations:
+**What if I do not have access to the `fable` model?**
+The alias falls back to whatever model the session is using. You keep the read-only, fresh-context consult; the oracle is simply not a bigger model than your session.
 
-| scenario | Python | Go | |
-|---|---|---|---|
-| `session-start` | 88.2 ms | 18.4 ms | 4.8x |
-| `stop`, small transcript | 80.6 ms | 21.8 ms | 3.7x |
-| `stop`, real 3.7 MB transcript | 117.7 ms | 33.2 ms | 3.5x |
-| 7 concurrent `stop` hooks, 3.7 MB | 184.6 ms | 56.8 ms | 3.3x |
+**Does it work on Bedrock or Vertex?**
+Yes. The agent uses a model alias, and Claude Code resolves aliases per provider.
 
-The Stop payload carries `last_assistant_message`, so the final assistant text
-is read from it directly rather than reconstructed from the transcript. That
-retired the flush-race backoff entirely on any Claude Code that sends the field:
-text-less turns used to spend up to 400ms waiting for the transcript to catch up,
-and now spend none. The transcript is still read — the consult check and the
-failure streak need it — but nothing waits on it, and older harnesses that omit
-the field still fall back to the original bounded re-read.
+**What does it add to every turn?**
+A compiled hook that runs in roughly 20 to 35 ms on Windows, less on macOS and Linux, and a few hundred tokens of doctrine at session start. Measurements are in [`docs/development.md`](docs/development.md).
 
-Two things bound the remaining time, and neither is this code. Spawning *any*
-executable on this Windows box costs ~17 ms, and the measurement harness adds
-~9 ms; the hook binary in a no-op mode is indistinguishable from a trivial one.
-On Linux and macOS, where process creation is far cheaper, the floor is lower.
+**Can it break my session?**
+It is designed not to. Every code path exits 0 and stays silent on any unexpected input, malformed transcript, or panic. The oracle agent has no write tools. If you ever want it gone for a session, set `CC_ORACLE_DISABLE=1`.
 
-The large-transcript figure depends on `transcript.LoadTurn`, which returns only
-the current turn without parsing the entries before it. The hook discards
-everything older anyway, and the turn boundary sits near the end of the file, so
-parsing the whole transcript was wasted work — 109 ms of it on a 3.7 MB file,
-versus 4.9 ms to parse just the turn, at 69x fewer allocations. Since the
-flush-race retry re-reads the transcript, that saving is paid back on each
-retry too.
+**Does it need Python, Go, or Node?**
+No. The hook ships as a precompiled binary for every supported platform. Python 3.9+ is used only as a fallback if no binary can execute on your system.
 
-## Requirements & portability
+## Requirements and platforms
 
 - Claude Code with plugin support.
-- **No runtime dependency.** The hook ships as a precompiled binary for every
-  supported platform, so there is nothing to install — no Python, no toolchain.
-
-Supported platforms, all committed under `hooks/bin/`:
+- No runtime dependency: the hook is a precompiled binary, committed under `hooks/bin/`.
 
 | | x86-64 | arm64 |
 |---|---|---|
@@ -135,73 +272,23 @@ Supported platforms, all committed under `hooks/bin/`:
 | **macOS** | ✅ | ✅ |
 | **Linux** | ✅ | ✅ |
 
-`hooks/hooks.json` selects the right binary at run time by trying each in turn;
-see [`docs/dispatch.md`](docs/dispatch.md) for why that is safe in both
-`cmd.exe` and POSIX shells. If no binary can execute — an unforeseen platform, a
-`noexec` mount — the original `hooks/oracle_hook.py` still runs as a fallback,
-so the safety net never silently disappears. That path needs Python 3.9+ as
-`python` or `python3`.
-
-The implementation commits to a portability floor:
-
-- **Standard library only** — no third-party modules, in either language.
-- **Windows / macOS / Linux** — no platform-specific paths or shell assumptions.
-- **Fail open, always** — any unexpected input, any error, any panic exits 0
-  and stays silent. A hook must never wedge a session.
-- **Encoding robustness** — transcripts are decoded with invalid bytes replaced
-  (one bad byte never kills detection); emitted JSON is ASCII-escaped so it
-  survives any console codepage.
+`hooks/hooks.json` selects the right binary at run time by trying each in turn; [`docs/dispatch.md`](docs/dispatch.md) explains why that is safe in both `cmd.exe` and POSIX shells. If no binary can execute (an unforeseen platform, a `noexec` mount), the original `hooks/oracle_hook.py` runs as a fallback with Python 3.9+, so the safety net never silently disappears.
 
 ## Development
 
-The Go implementation is the one that ships; `hooks/oracle_hook.py` is kept as
-the fallback and as the executable specification the Go port is tested against.
+Two implementations, tested against each other for byte-identical output:
 
 ```sh
 go test ./...          # Go unit tests
-python -m pytest -q    # Python unit tests + the differential suite
+python -m pytest -q    # Python unit tests + the Go ↔ Python differential suite
 sh scripts/build.sh    # cross-compile all six binaries from any one machine
 ```
 
-`tests/test_differential.py` is the important one: it drives **both**
-implementations with byte-identical stdin, environment, and transcript files and
-asserts byte-identical stdout, including over real multi-megabyte session
-transcripts. The unit tests on each side prove each side self-consistent; only
-the differential suite proves they agree. It skips automatically when no Go
-binary is built.
+Architecture, performance measurements, repo layout, and the design and research documents are in [`docs/development.md`](docs/development.md).
 
-Repo layout:
+## Contributing
 
-| Path | Purpose |
-|---|---|
-| `.claude-plugin/plugin.json` | Plugin manifest |
-| `.claude-plugin/marketplace.json` | Marketplace listing (lets this repo double as a marketplace) |
-| `agents/oracle.md` | The oracle subagent definition |
-| `cmd/oracle-hook/` | CLI entry point |
-| `internal/detect/` | Marker + idiom-family detection, quote/question suppression |
-| `internal/transcript/` | JSONL parsing, turn boundary, oracle-consult detection |
-| `internal/config/` | `config.json` surface and data-dir resolution |
-| `internal/state/` | Per-turn block record: atomic write, allowlisted pruning |
-| `internal/pyjson/` | JSON encoder matching CPython's `json.dumps` byte for byte |
-| `internal/hook/` | The two entry points and the flush-race handling |
-| `manifest.go` | Plugin identity, embedded from the manifests at build time |
-| `hooks/bin/` | The six committed binaries |
-| `hooks/oracle_hook.py` | Python fallback and executable specification |
-| `hooks/hooks.json` | SessionStart + Stop hook wiring, with platform dispatch |
-| `scripts/build.sh` | Cross-compiles every target |
-| `tests/test_differential.py` | Go ↔ Python parity over shared inputs |
-| `tests/test_detection.py` | Marker + question/quote-suppression logic |
-| `tests/test_transcript.py` | Transcript parsing / turn analysis |
-| `tests/test_stop_entry.py` | End-to-end stdin→stdout behavior of the hook entrypoints |
-| `tests/test_config.py` | Configuration surface + portability floor |
-
-Further reading under `docs/`:
-
-- [`docs/dispatch.md`](docs/dispatch.md) — how the platform binary is selected, and why it is safe
-- [`docs/specs/2026-08-08-go-port-contract.md`](docs/specs/2026-08-08-go-port-contract.md) — the Go port contract and known Python/Go divergences
-- [`docs/specs/2026-07-23-oracle-plugin-design.md`](docs/specs/2026-07-23-oracle-plugin-design.md) — design spec
-- [`docs/plans/2026-07-23-oracle-plugin.md`](docs/plans/2026-07-23-oracle-plugin.md) — implementation plan
-- [`docs/research/2026-07-23-anthropic-docs-report.md`](docs/research/2026-07-23-anthropic-docs-report.md) — official-docs research report
+Issues and pull requests are welcome. If you are changing detection behavior, add a case to `tests/test_detection.py` and keep both implementations in agreement: the differential suite is the contract. If you are changing the doctrine or the oracle's instructions, say in the PR what you saw a session do that the current wording did not handle.
 
 ## License
 
