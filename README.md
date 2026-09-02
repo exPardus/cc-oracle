@@ -19,6 +19,11 @@
 
 That is the whole setup. Nothing to configure, nothing to run, no Python or Node required.
 
+<p align="center">
+  <img src="docs/assets/demo.gif" alt="A Claude Code session fails a test three times, says it is not sure why, gets blocked by the Stop hook with a nudge quoting its own words, consults the oracle with a structured brief, receives a Diagnosis, Plan and Pitfalls, and then passes all three tests." width="880">
+</p>
+<p align="center"><sub>Illustrative session. The hook and nudge text are what the plugin actually emits.</sub></p>
+
 ## Why
 
 Every agentic coding session hits a wall sometimes: a test that will not pass, an error it cannot place, a fix that keeps almost working. Left alone, a model keeps trying. Each attempt adds noise to its own context, and the tenth attempt is being made by a model that is now reasoning over nine failures. Tokens burn, and the code gets worse.
