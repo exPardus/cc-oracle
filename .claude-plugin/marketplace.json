@@ -3,6 +3,7 @@
   "owner": {
     "name": "Techn0Ninja27"
   },
+  "description": "Stop-hook safety net plus a read-only oracle subagent: when a session states uncertainty or its tool calls keep failing, it consults a best-model oracle instead of flailing solo.",
   "plugins": [
     {
       "name": "oracle",
