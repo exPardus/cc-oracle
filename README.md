@@ -243,13 +243,28 @@ Environment kill-switch: `CC_ORACLE_DISABLE=1` (also `true`/`yes`) silences both
 
 Failure posture: a malformed file or a wrong-typed key is ignored and defaults apply. Configuration can only tune the plugin, never break a session. Note the asymmetry: config trouble leaves the doctrine *on* (defaults win); only an explicit, well-formed `false` turns anything off.
 
+## What we measured
+
+There is a benchmark in [`bench/`](bench/): sixteen small Python bug-fix tasks, each pre-registered with its trap and its solution, run under five configurations with every other plugin and MCP server disabled. Design, flags, and caveats are in [`docs/specs/2026-09-02-benchmark-design.md`](docs/specs/2026-09-02-benchmark-design.md); raw results are under [`bench/results/`](bench/results/).
+
+| models | runs | solved | oracle consults | hook nudges |
+|---|---|---|---|---|
+| Haiku 4.5, Sonnet 5, Fable 5.1, with and without the plugin | 104 | 104 | 0 | 0 |
+
+Two things that proves:
+
+- **It costs nothing when it is not needed.** In the 44 runs with the plugin loaded, sessions took the same number of turns as without it, and total cost came out 2.5% lower, which is noise.
+- **It does not misfire.** 398 turns of Haiku and Sonnet sessions with the Stop hook active, zero false nudges.
+
+One thing it does not prove: rescue. Every model solved every task first try, including Haiku at low effort, so the oracle was never consulted and there is no pass-rate difference to report. The tasks we could write were not hard enough to stall a current model. The claim that a consult gets a stuck session unstuck rests on experience with real work, not on this benchmark. If you have a task that reliably stalls Haiku or Sonnet, a pull request adding it to `bench/tasks/` is the most useful contribution you can make.
+
 ## FAQ
 
 **Does this cost more?**
 A consult is one call to a top-tier model that reads your code and writes a plan. That is not free, but it replaces the thing that is expensive: a long tail of failed attempts in a context that keeps growing. The oracle never runs a loop of its own, never edits, and is only invoked when the session is already stuck.
 
 **Will it nag me?**
-It nudges the *model*, not you. The Stop hook fires at most once per turn, only on explicit first-person uncertainty or three consecutive tool failures, and never on a question the model is asking you. In practice most turns never see it; the doctrine does the work and the hook catches forgetting.
+It nudges the *model*, not you. The Stop hook fires at most once per turn, only on explicit first-person uncertainty or three consecutive tool failures, and never on a question the model is asking you. In practice most turns never see it; the doctrine does the work and the hook catches forgetting. Measured: zero nudges in 398 benchmark turns.
 
 **What if I do not have access to the `fable` model?**
 The alias falls back to whatever model the session is using. You keep the read-only, fresh-context consult; the oracle is simply not a bigger model than your session.
@@ -258,7 +273,7 @@ The alias falls back to whatever model the session is using. You keep the read-o
 Yes. The agent uses a model alias, and Claude Code resolves aliases per provider.
 
 **What does it add to every turn?**
-A compiled hook that runs in roughly 20 to 35 ms on Windows, less on macOS and Linux, and a few hundred tokens of doctrine at session start. Measurements are in [`docs/development.md`](docs/development.md).
+A compiled hook that runs in roughly 20 to 35 ms on Windows, less on macOS and Linux, and a few hundred tokens of doctrine at session start. In the benchmark, sessions with the plugin cost the same as sessions without it. Hook timings are in [`docs/development.md`](docs/development.md).
 
 **Can it break my session?**
 It is designed not to. Every code path exits 0 and stays silent on any unexpected input, malformed transcript, or panic. The oracle agent has no write tools. If you ever want it gone for a session, set `CC_ORACLE_DISABLE=1`.

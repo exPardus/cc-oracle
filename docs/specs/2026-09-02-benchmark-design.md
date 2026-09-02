@@ -161,7 +161,37 @@ consults. Plus a per-task grid of pass/fail across configurations.
 2. **Full, easy tier**: ten tasks, five configurations, one rep.
    Done 2026-09-02: see `bench/results/easy-tier/summary.md`.
 3. **Full, hard tier**: six tasks, five configurations, one rep, cap $3.
-4. **Reps**: to three per cell if budget allows, since single runs are noisy.
+   Done 2026-09-02: see `bench/results/hard-tier/summary.md`.
+4. **Hard tier at `--effort low`**, Haiku and Sonnet cells only, to look for
+   stalls at the cheapest setting. Done 2026-09-02: see
+   `bench/results/hard-tier-effort-low/summary.md`.
+5. **Reps**: not run. With 104 of 104 solved there is no difference to
+   tighten.
+
+## Results and conclusion (2026-09-02)
+
+| config | runs | solved | mean cost | mean turns |
+|---|---|---|---|---|
+| A haiku | 22 | 22 | $0.068 | 10.2 |
+| B haiku + cc-oracle | 22 | 22 | $0.070 | 10.2 |
+| C sonnet | 22 | 22 | $0.118 | 8.0 |
+| D sonnet + cc-oracle | 22 | 22 | $0.110 | 7.9 |
+| E fable | 16 | 16 | $0.292 | 3.9 |
+
+Across the 44 plugin runs: 398 turns, 0 oracle consults, 0 Stop-hook
+nudges. Paired cost with the plugin was $3.97 against $4.07 without.
+
+What this shows: the plugin is free when nothing stalls, and the Stop hook
+produced no false positive in 398 turns of two models' output.
+
+What it does not show: rescue. No configuration got stuck, so no consult
+happened and the pass-rate question is unanswered. Tasks of this shape,
+two to five files with a decoy fix, do not stall current models even at low
+effort. A benchmark that could answer the rescue question needs a different
+task class: larger unfamiliar codebases, long-horizon tasks where context
+pollution accumulates over dozens of turns, or environment failures
+(dependency and build problems) rather than logic bugs. That is future
+work, and the harness is ready for it.
 
 Runs are sequential or two at a time. Per-run wall-clock timeout 15 minutes;
 the process tree is killed on timeout and the run is scored `timeout`.
