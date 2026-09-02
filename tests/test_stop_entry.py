@@ -435,3 +435,149 @@ def test_string_false_stop_hook_active_does_not_suppress(tmp_path, monkeypatch):
     payload_dict["stop_hook_active"] = "false"
     code, out = run_stop(json.dumps(payload_dict))
     assert json.loads(out)["decision"] == "block"
+
+
+# --- last_assistant_message fast path ----------------------------------------
+
+def _tool_use(tid, name):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tid, "name": name, "input": {}}]}}
+
+
+def _tool_result(tid, is_error):
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tid, "is_error": is_error, "content": "x"}]}}
+
+
+def test_last_assistant_message_is_used_and_skips_the_flush_wait(tmp_path, monkeypatch):
+    # The harness hands us the final text from memory, so it can never be the
+    # stale copy the retry existed to work around. When present, no wait at all.
+    _isolate_state(monkeypatch, tmp_path)
+    import oracle_hook
+    sleeps = []
+    monkeypatch.setattr(oracle_hook, "_sleep", lambda s: sleeps.append(s))
+    # Transcript tail is a thinking block only, which WOULD trigger the retry.
+    entries = [_user_prompt("x"), {"type": "assistant", "message": {"role": "assistant",
+               "content": [{"type": "thinking", "thinking": "hmm"}]}}]
+    payload = json.dumps({
+        "session_id": _fresh_session(), "prompt_id": "p-1",
+        "transcript_path": _write_transcript(tmp_path, entries),
+        "stop_hook_active": False,
+        "last_assistant_message": "I'm stuck. The mock never fires.",
+    })
+    code, out = run_stop(payload)
+    assert json.loads(out)["decision"] == "block"
+    assert sleeps == [], "the direct field must not pay the flush budget"
+
+
+def test_last_assistant_message_wins_over_stale_transcript_text(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("x"), _assistant_text("I'm stuck. Stale on-disk text.")]
+    payload = json.dumps({
+        "session_id": _fresh_session(), "prompt_id": "p-1",
+        "transcript_path": _write_transcript(tmp_path, entries),
+        "stop_hook_active": False,
+        "last_assistant_message": "All done. Tests pass.",
+    })
+    assert run_stop(payload) == (0, "")
+
+
+def test_blank_last_assistant_message_falls_back_to_transcript(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("x"), _assistant_text("I'm stuck. No idea.")]
+    for value in ("", "   ", None, 42, [], {}):
+        payload_dict = {
+            "session_id": _fresh_session(), "prompt_id": "p-1",
+            "transcript_path": _write_transcript(tmp_path, entries),
+            "stop_hook_active": False, "last_assistant_message": value,
+        }
+        code, out = run_stop(json.dumps(payload_dict))
+        assert json.loads(out)["decision"] == "block", value
+
+
+def test_nudge_quotes_the_triggering_sentence(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("x"), _assistant_text(
+        "Refactored it. I'm stuck on the failing mock. Tests still red.")]
+    _, out = run_stop(_payload(tmp_path, entries))
+    reason = json.loads(out)["reason"]
+    assert '"I\'m stuck on the failing mock."' in reason
+    assert "full brief" in reason
+
+
+# --- behavioral trigger: consecutive failures --------------------------------
+
+def test_consecutive_failures_block_without_any_marker(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("fix the build")]
+    for i, tool in enumerate(("PowerShell", "PowerShell", "Bash")):
+        entries.append(_tool_use(f"t{i}", tool))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant_text("Trying another approach."))
+    code, out = run_stop(_payload(tmp_path, entries))
+    reason = json.loads(out)["reason"]
+    assert json.loads(out)["decision"] == "block"
+    assert "3 consecutive tool failures" in reason
+    assert "PowerShell" in reason
+
+
+def test_two_failures_do_not_block(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("fix")]
+    for i in range(2):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant_text("Trying another approach."))
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
+def test_probe_failures_alone_never_block(tmp_path, monkeypatch):
+    # Read/Glob/Grep failing in a row is path-hunting, not flailing.
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("find it")]
+    for i, tool in enumerate(("Read", "Glob", "Grep", "LS")):
+        entries.append(_tool_use(f"t{i}", tool))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant_text("Looking elsewhere."))
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
+def test_success_breaks_the_failure_run(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("fix")]
+    for i, err in enumerate((True, True, False, True)):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", err))
+    entries.append(_assistant_text("Continuing."))
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
+def test_streak_respects_the_question_exemption(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("fix")]
+    for i in range(3):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant_text("That failed three times. Should I try the other approach?"))
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
+def test_streak_respects_oracle_already_consulted(tmp_path, monkeypatch):
+    _isolate_state(monkeypatch, tmp_path)
+    entries = [_user_prompt("fix"),
+               {"type": "assistant", "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle"}}]}}]
+    for i in range(3):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant_text("Continuing."))
+    assert run_stop(_payload(tmp_path, entries)) == (0, "")
+
+
+def test_failure_streak_helper_counts_runs():
+    from oracle_hook import failure_streak
+    entries = [_tool_use("a", "PowerShell"), _tool_result("a", True),
+               _tool_use("r", "Read"), _tool_result("r", True),
+               _tool_use("b", "Bash"), _tool_result("b", True)]
+    # a probe failure neither extends nor breaks the run
+    assert failure_streak(entries) == (2, ("PowerShell", "Bash"))

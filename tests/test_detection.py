@@ -202,3 +202,61 @@ def test_variant_near_misses_do_not_fire(text):
 ])
 def test_anchored_families_ignore_benign_uses(text):
     assert not should_nudge(text)
+
+
+# --- progress-stall families (added after mining 1,741 real turns) -----------
+
+@pytest.mark.parametrize("text", [
+    "I'm not making progress on this deadlock.",
+    "I am not making any progress here.",
+    "We are not making much progress on the migration.",
+    "I can't make progress until the linker is fixed.",
+    "I keep getting the same TypeError from the parser.",
+    "I keep hitting the same assertion failure.",
+    "We have been seeing the same timeout all afternoon.",
+    "I still can't get the mock to fire.",
+    "I still cannot reproduce the crash locally.",
+    "I'm not getting anywhere with this stack trace.",
+    "This is not getting me anywhere.",
+])
+def test_progress_stall_families_fire(text):
+    assert should_nudge(text)
+
+
+@pytest.mark.parametrize("text", [
+    # third person: the subject is not the model
+    "The build is not making progress because the queue is paused. Fixed.",
+    "The retry keeps getting the same result, which is correct. Done.",
+    "The migration still cannot run on Postgres 12; documented that. Shipped.",
+    # negated: the model is saying the opposite
+    "I am not out of ideas, and I am making progress. Continuing.",
+    # benign uses of the same words
+    "This did not get anywhere near the memory limit. Shipped.",
+    "Progress bars now render correctly. Done.",
+])
+def test_progress_stall_near_misses_do_not_fire(text):
+    assert not should_nudge(text)
+
+
+def test_progress_stall_question_still_exempt():
+    assert not should_nudge("I still can't tell which layout you prefer - A or B?")
+
+
+# --- first_marker_sentence (quoting the trigger back) ------------------------
+
+def test_first_marker_sentence_returns_the_matching_sentence():
+    from oracle_hook import first_marker_sentence
+    text = "Refactored the parser. I'm stuck on the failing mock. Tests still red."
+    assert first_marker_sentence(text) == "I'm stuck on the failing mock."
+
+
+def test_first_marker_sentence_none_without_a_marker():
+    from oracle_hook import first_marker_sentence
+    assert first_marker_sentence("All tests pass. Done.") is None
+
+
+def test_first_marker_sentence_falls_back_to_whole_text():
+    from oracle_hook import first_marker_sentence
+    # Marker spans what the splitter treats as one sentence: still returned.
+    text = "I'm not\nsure why this fails"
+    assert first_marker_sentence(text) == text

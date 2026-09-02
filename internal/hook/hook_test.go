@@ -579,3 +579,173 @@ func TestIntegerAndFloatSessionIDsStayDistinct(t *testing.T) {
 		t.Errorf("1e3 and 1000 both render %q", a)
 	}
 }
+
+// --- last_assistant_message fast path ---------------------------------------
+
+func payloadWith(t *testing.T, extra map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(extra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestLastAssistantMessageSkipsTheFlushWait(t *testing.T) {
+	// The harness hands us the final text from memory, so it can never be the
+	// stale copy the retry existed to work around. When present, no wait at all.
+	isolate(t)
+	seen := stubSleep(t, nil)
+	// A thinking-only tail WOULD otherwise trigger the whole retry budget.
+	path := writeTranscript(t, t.TempDir(), []map[string]any{
+		userPrompt("x"), assistantThinking()})
+	out := payloadWith(t, map[string]any{
+		"session_id": freshSession(t), "prompt_id": "p-1",
+		"transcript_path": path, "stop_hook_active": false,
+		"last_assistant_message": "I'm stuck. The mock never fires.",
+	})
+	code, body := RunStop(out)
+	assertBlocks(t, code, body)
+	if len(*seen) != 0 {
+		t.Errorf("the direct field must not pay the flush budget, slept %v", *seen)
+	}
+}
+
+func TestLastAssistantMessageWinsOverStaleTranscript(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(), []map[string]any{
+		userPrompt("x"), assistantText("I'm stuck. Stale on-disk text.")})
+	out := payloadWith(t, map[string]any{
+		"session_id": freshSession(t), "prompt_id": "p-1",
+		"transcript_path": path, "stop_hook_active": false,
+		"last_assistant_message": "All done. Tests pass.",
+	})
+	silence(t)(RunStop(out))
+}
+
+func TestBlankLastAssistantMessageFallsBackToTranscript(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(), []map[string]any{
+		userPrompt("x"), assistantText("I'm stuck. No idea.")})
+	for _, v := range []any{"", "   ", nil, 42, []any{}, map[string]any{}} {
+		t.Run(fmt.Sprintf("%v", v), func(t *testing.T) {
+			out := payloadWith(t, map[string]any{
+				"session_id": freshSession(t), "prompt_id": "p-1",
+				"transcript_path": path, "stop_hook_active": false,
+				"last_assistant_message": v,
+			})
+			code, body := RunStop(out)
+			assertBlocks(t, code, body)
+		})
+	}
+}
+
+func TestNudgeQuotesTheTriggeringSentence(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(), []map[string]any{
+		userPrompt("x"),
+		assistantText("Refactored it. I'm stuck on the failing mock. Tests still red.")})
+	_, body := RunStop(payload(t, path, freshSession(t), "p-1", false))
+	reason, _ := decision(t, body)["reason"].(string)
+	if !strings.Contains(reason, `"I'm stuck on the failing mock."`) {
+		t.Errorf("reason does not quote the trigger: %q", reason)
+	}
+}
+
+// --- behavioral trigger ------------------------------------------------------
+
+func toolUseEntry(id, name string) map[string]any {
+	return map[string]any{"type": "assistant", "message": map[string]any{
+		"role": "assistant", "content": []any{map[string]any{
+			"type": "tool_use", "id": id, "name": name, "input": map[string]any{}}}}}
+}
+
+func toolResultEntry(id string, isError bool) map[string]any {
+	return map[string]any{"type": "user", "message": map[string]any{
+		"role": "user", "content": []any{map[string]any{
+			"type": "tool_result", "tool_use_id": id, "is_error": isError, "content": "x"}}}}
+}
+
+func failingTurn(tools []string, tail string) []map[string]any {
+	entries := []map[string]any{userPrompt("fix the build")}
+	for i, tool := range tools {
+		id := fmt.Sprintf("t%d", i)
+		entries = append(entries, toolUseEntry(id, tool), toolResultEntry(id, true))
+	}
+	return append(entries, assistantText(tail))
+}
+
+func TestConsecutiveFailuresBlockWithoutAnyMarker(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(),
+		failingTurn([]string{"PowerShell", "PowerShell", "Bash"}, "Trying another approach."))
+	code, body := RunStop(payload(t, path, freshSession(t), "p-1", false))
+	assertBlocks(t, code, body)
+	reason, _ := decision(t, body)["reason"].(string)
+	if !strings.Contains(reason, "3 consecutive tool failures") {
+		t.Errorf("reason = %q", reason)
+	}
+	if !strings.Contains(reason, "PowerShell") {
+		t.Errorf("reason should name the tools: %q", reason)
+	}
+}
+
+func TestTwoFailuresDoNotBlock(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(),
+		failingTurn([]string{"Bash", "Bash"}, "Trying another approach."))
+	silence(t)(RunStop(payload(t, path, freshSession(t), "p-1", false)))
+}
+
+func TestProbeFailuresAloneNeverBlock(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(),
+		failingTurn([]string{"Read", "Glob", "Grep", "LS"}, "Looking elsewhere."))
+	silence(t)(RunStop(payload(t, path, freshSession(t), "p-1", false)))
+}
+
+func TestStreakRespectsQuestionExemption(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	path := writeTranscript(t, t.TempDir(), failingTurn(
+		[]string{"Bash", "Bash", "Bash"},
+		"That failed three times. Should I try the other approach?"))
+	silence(t)(RunStop(payload(t, path, freshSession(t), "p-1", false)))
+}
+
+func TestStreakRespectsOracleAlreadyConsulted(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	entries := []map[string]any{
+		userPrompt("fix"),
+		assistantTool("Task", map[string]any{"subagent_type": "oracle"}),
+	}
+	for i, tool := range []string{"Bash", "Bash", "Bash"} {
+		id := fmt.Sprintf("t%d", i)
+		entries = append(entries, toolUseEntry(id, tool), toolResultEntry(id, true))
+	}
+	entries = append(entries, assistantText("Continuing."))
+	path := writeTranscript(t, t.TempDir(), entries)
+	silence(t)(RunStop(payload(t, path, freshSession(t), "p-1", false)))
+}
+
+func TestStreakOutputMatchesPythonGolden(t *testing.T) {
+	isolate(t)
+	stubSleep(t, nil)
+	golden, err := os.ReadFile(filepath.Join("testdata", "python_streak_block.json"))
+	if err != nil {
+		t.Skipf("streak golden not available: %v", err)
+	}
+	path := writeTranscript(t, t.TempDir(),
+		failingTurn([]string{"PowerShell", "PowerShell", "Bash"}, "Trying another approach."))
+	_, body := RunStop(payload(t, path, freshSession(t), "p-1", false))
+	if body != string(golden) {
+		t.Errorf("streak output differs from Python\n got: %s\nwant: %s", body, golden)
+	}
+}

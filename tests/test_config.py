@@ -447,3 +447,51 @@ def test_stop_output_is_ascii_safe(monkeypatch, tmp_path):
     payload = _payload(tmp_path, [_user_prompt("x"), _assistant_text("I'm stuck. No idea.")])
     _, out = run_stop(payload)
     assert out and all(ord(c) < 128 for c in out)
+
+
+# --- failure_streak knob ------------------------------------------------------
+
+def _tool_use_cfg(tid, name):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tid, "name": name, "input": {}}]}}
+
+
+def _tool_result_cfg(tid):
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tid, "is_error": True, "content": "x"}]}}
+
+
+def _failing_turn(n):
+    entries = [_user_prompt("fix")]
+    for i in range(n):
+        entries.append(_tool_use_cfg(f"t{i}", "Bash"))
+        entries.append(_tool_result_cfg(f"t{i}"))
+    entries.append(_assistant_text("Continuing."))
+    return entries
+
+
+def test_failure_streak_defaults_to_three(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    assert load_config()["failure_streak"] == 3
+
+
+def test_failure_streak_zero_disables_the_behavioral_trigger(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    _write_config(tmp_path, {"failure_streak": 0})
+    assert run_stop(_payload(tmp_path, _failing_turn(5))) == (0, "")
+
+
+def test_failure_streak_threshold_is_honoured(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    _write_config(tmp_path, {"failure_streak": 5})
+    assert run_stop(_payload(tmp_path, _failing_turn(4))) == (0, "")
+    code, out = run_stop(_payload(tmp_path, _failing_turn(5)))
+    assert json.loads(out)["decision"] == "block"
+
+
+@pytest.mark.parametrize("bad", ["3", 3.5, True, False, -1, None, [], {}])
+def test_failure_streak_wrong_types_ignored(monkeypatch, tmp_path, bad):
+    # bool is an int subclass in Python; True must NOT read as a threshold of 1.
+    _isolate(monkeypatch, tmp_path)
+    _write_config(tmp_path, {"failure_streak": bad})
+    assert load_config()["failure_streak"] == 3

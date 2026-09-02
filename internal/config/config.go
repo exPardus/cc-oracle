@@ -14,6 +14,7 @@ package config
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -67,6 +68,10 @@ var baselineMarkers = []string{
 	"going in circles",
 	"can't work out",
 	"no idea how",
+	"not making progress",
+	"keep getting the same",
+	"still can't",
+	"not getting anywhere",
 }
 
 // whitespaceRun mirrors Python's `\s+` on str patterns, which is
@@ -87,14 +92,19 @@ type Config struct {
 	MarkersRemove []string
 	// StateDir overrides where per-turn block-state files live. "" means unset.
 	StateDir string
+	// FailureStreak is how many consecutive non-probe tool failures trigger a
+	// nudge on their own, independent of what the model said. 0 disables the
+	// behavioral trigger. Default 3.
+	FailureStreak int
 }
 
 // Defaults returns the zero-config configuration. Every default reproduces v1
 // behavior exactly.
 func Defaults() Config {
 	return Config{
-		StopHook: true,
-		Doctrine: true,
+		StopHook:      true,
+		Doctrine:      true,
+		FailureStreak: 3,
 	}
 }
 
@@ -173,6 +183,12 @@ func Load() Config {
 	}
 	if v, ok := doc["doctrine"].(bool); ok {
 		cfg.Doctrine = v
+	}
+	// encoding/json decodes every number to float64, so a threshold must be
+	// checked for integrality here the way Python's isinstance(x, int) does --
+	// and 3.5 must be rejected, not truncated.
+	if v, ok := doc["failure_streak"].(float64); ok && v >= 0 && v == math.Trunc(v) {
+		cfg.FailureStreak = int(v)
 	}
 	if v, ok := doc["state_dir"].(string); ok && strings.TrimSpace(v) != "" {
 		// Stored verbatim, like Python: only the emptiness test trims.

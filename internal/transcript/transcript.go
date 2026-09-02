@@ -69,6 +69,17 @@ type Block struct {
 	Text string
 	Name string
 
+	// ID is a tool_use block's "id"; ToolUseID is a tool_result block's
+	// "tool_use_id". Together they let a failing result be attributed to the
+	// tool that produced it, which FailureStreak needs to tell a failing
+	// PowerShell run from a failing Read.
+	ID        string
+	ToolUseID string
+
+	// IsError is a tool_result's "is_error", read with Python truthiness so a
+	// non-boolean value behaves the way the dict-based original would.
+	IsError bool
+
 	// Input is the tool_use "input" object, kept raw and interpreted lazily by
 	// subagentType. Only tool_use blocks inside the current turn are ever
 	// inspected, so the whole transcript's tool inputs are never decoded.
@@ -365,10 +376,13 @@ func parseContent(raw json.RawMessage) Content {
 				continue
 			}
 			c.Blocks = append(c.Blocks, Block{
-				Type:  jsonString(m["type"]),
-				Text:  jsonString(m["text"]),
-				Name:  jsonString(m["name"]),
-				Input: m["input"],
+				Type:      jsonString(m["type"]),
+				Text:      jsonString(m["text"]),
+				Name:      jsonString(m["name"]),
+				ID:        jsonString(m["id"]),
+				ToolUseID: jsonString(m["tool_use_id"]),
+				IsError:   pythonTruthy(m["is_error"]),
+				Input:     m["input"],
 			})
 		}
 		return c
@@ -589,3 +603,61 @@ func decodeUTF8Replace(b []byte) []byte {
 }
 
 func isCont(c byte) bool { return c&0xC0 == 0x80 }
+
+// ProbeTools are read-only lookups. A run of these failing is a model hunting
+// for a file, not a model stalling: mining 1,741 real turns, excluding them is
+// what separates a genuine stall (PowerShell x3, Write x3) from path-probing.
+var ProbeTools = map[string]struct{}{
+	"Read": {}, "Glob": {}, "Grep": {}, "LS": {}, "NotebookRead": {},
+}
+
+// FailureStreak returns the longest run of consecutive failing non-probe tool
+// results in entries, and the tools involved in that run in first-seen order.
+//
+// A successful result breaks the run. A probe-tool failure neither extends nor
+// breaks it, so hunting for a file part-way through a stall does not reset the
+// count.
+func FailureStreak(entries []Entry) (int, []string) {
+	names := make(map[string]string)
+	for _, e := range entries {
+		if e.Type != "assistant" {
+			continue
+		}
+		for _, b := range e.Content.Blocks {
+			if b.Type == "tool_use" && b.ID != "" {
+				names[b.ID] = b.Name
+			}
+		}
+	}
+
+	best, run := 0, 0
+	var bestTools, current []string
+	for _, e := range entries {
+		if e.Type != "user" {
+			continue
+		}
+		for _, b := range e.Content.Blocks {
+			if b.Type != "tool_result" {
+				continue
+			}
+			if !b.IsError {
+				run, current = 0, nil
+				continue
+			}
+			tool := names[b.ToolUseID]
+			if _, probe := ProbeTools[tool]; probe {
+				continue
+			}
+			run++
+			if tool == "" {
+				tool = "?"
+			}
+			current = append(current, tool)
+			if run > best {
+				best = run
+				bestTools = append([]string(nil), current...)
+			}
+		}
+	}
+	return best, bestTools
+}

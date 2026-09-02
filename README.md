@@ -7,6 +7,7 @@ A weaker (or any) model consults a best-model, read-only oracle the moment it's 
 - **Doctrine** — a `SessionStart` hook injects a small standing instruction (via `additionalContext`): the moment a session notices it's unsure, stuck, confused, or going in circles, it should stop and consult the `oracle` agent with a full brief before attempting solo.
 - **Oracle agent** — `agents/oracle.md` runs on the `fable` model alias, with read-only tools (`Read`, `Grep`, `Glob`; no `Bash`, `Edit`, or `Write`). It enforces a full-brief contract, investigates the codebase itself, and returns a diagnosis and plan for the caller to implement.
 - **Stop-hook safety net** — a conservative marker check on the final assistant message of each turn, catching cases where the model states uncertainty (e.g. `"I'm not sure"`, `"I'm stuck"`, `"can't figure out"`) without having consulted the oracle. It suppresses questions posed to the user, text inside code fences/blockquotes/inline code/double quotes, and anything already covered by an oracle consult this turn; it blocks at most once per turn and fails open (silently) on any parse error or unexpected input.
+- **Behavioral trigger** — a turn where **three consecutive tool calls fail** is nudged even if the model never said it was stuck. Read-only lookups (`Read`, `Glob`, `Grep`, `LS`) are excluded, because a run of those failing is a model hunting for a file rather than stalling; a successful call resets the count. Every suppression above still applies, including the question exemption. The threshold was set by measuring 1,741 real turns: 3+ consecutive non-probe failures occur in 0.34% of them, while looser signals (any 3 failures, or the same tool repeated) fire on 3-11% and would mostly catch ordinary iterative work.
 
 ## Install
 
@@ -64,6 +65,7 @@ Schema — every key optional; **zero config reproduces v1 behavior exactly**:
 | `markers.add` | list of strings | `[]` | extra uncertainty markers (lowercased, whitespace-normalized before matching, same as built-ins) |
 | `markers.remove` | list of strings | `[]` | built-in markers to drop (case-insensitive) |
 | `state_dir` | string | unset | relocates the per-turn block-state files (config file location itself never moves) |
+| `failure_streak` | int | `3` | consecutive failing tool calls that trigger a nudge on their own; `0` disables the behavioral trigger |
 
 Worked example — quieter hook for a repo where "I'm confused" shows up in legitimate prose, plus one project-specific marker and state on a RAM disk:
 
@@ -97,6 +99,14 @@ Median of 15 runs, Windows 10, same inputs driven through both implementations:
 | `stop`, small transcript | 80.6 ms | 21.8 ms | 3.7x |
 | `stop`, real 3.7 MB transcript | 117.7 ms | 33.2 ms | 3.5x |
 | 7 concurrent `stop` hooks, 3.7 MB | 184.6 ms | 56.8 ms | 3.3x |
+
+The Stop payload carries `last_assistant_message`, so the final assistant text
+is read from it directly rather than reconstructed from the transcript. That
+retired the flush-race backoff entirely on any Claude Code that sends the field:
+text-less turns used to spend up to 400ms waiting for the transcript to catch up,
+and now spend none. The transcript is still read — the consult check and the
+failure streak need it — but nothing waits on it, and older harnesses that omit
+the field still fall back to the original bounded re-read.
 
 Two things bound the remaining time, and neither is this code. Spawning *any*
 executable on this Windows box costs ~17 ms, and the measurement harness adds

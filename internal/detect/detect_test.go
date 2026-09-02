@@ -533,3 +533,64 @@ func TestIsQuestionTurnEdgeCases(t *testing.T) {
 		{"statement_only", "I'm stuck. The build fails.", false},
 	})
 }
+
+// --- progress-stall families (added after mining 1,741 real turns) ----------
+
+func TestProgressStallFamiliesFire(t *testing.T) {
+	for _, text := range []string{
+		"I'm not making progress on this deadlock.",
+		"I am not making any progress here.",
+		"We are not making much progress on the migration.",
+		"I can't make progress until the linker is fixed.",
+		"I keep getting the same TypeError from the parser.",
+		"I keep hitting the same assertion failure.",
+		"We have been seeing the same timeout all afternoon.",
+		"I still can't get the mock to fire.",
+		"I still cannot reproduce the crash locally.",
+		"I'm not getting anywhere with this stack trace.",
+		"This is not getting me anywhere.",
+	} {
+		t.Run(text, func(t *testing.T) {
+			if !ShouldNudge(text, DefaultMarkerSet()) {
+				t.Error("expected a nudge")
+			}
+		})
+	}
+}
+
+func TestProgressStallNearMissesDoNotFire(t *testing.T) {
+	for _, text := range []string{
+		// third person: the subject is not the model
+		"The build is not making progress because the queue is paused. Fixed.",
+		"The retry keeps getting the same result, which is correct. Done.",
+		"The migration still cannot run on Postgres 12; documented that. Shipped.",
+		// negated
+		"I am not out of ideas, and I am making progress. Continuing.",
+		// benign uses of the same words
+		"This did not get anywhere near the memory limit. Shipped.",
+		"Progress bars now render correctly. Done.",
+		// question exemption still wins
+		"I still can't tell which layout you prefer - A or B?",
+	} {
+		t.Run(text, func(t *testing.T) {
+			if ShouldNudge(text, DefaultMarkerSet()) {
+				t.Error("expected silence")
+			}
+		})
+	}
+}
+
+func TestFirstMarkerSentence(t *testing.T) {
+	set := DefaultMarkerSet()
+	cases := []struct{ in, want string }{
+		{"Refactored the parser. I'm stuck on the failing mock. Tests still red.",
+			"I'm stuck on the failing mock."},
+		{"All tests pass. Done.", ""},
+		{"I'm not\nsure why this fails", "I'm not\nsure why this fails"},
+	}
+	for _, c := range cases {
+		if got := FirstMarkerSentence(c.in, set); got != c.want {
+			t.Errorf("FirstMarkerSentence(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

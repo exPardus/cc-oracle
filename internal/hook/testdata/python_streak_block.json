@@ -1,0 +1,1 @@
+{"decision": "block", "reason": "3 consecutive tool failures this turn (PowerShell, Bash) without consulting the oracle. Dispatch the `oracle` agent now with a full brief \u2014 Goal, Problem (errors verbatim), Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) \u2014 then implement its plan."}
