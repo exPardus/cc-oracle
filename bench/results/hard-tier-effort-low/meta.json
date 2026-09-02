@@ -1,0 +1,43 @@
+{
+  "started": "2026-09-02T21:00:21",
+  "claude_version": "2.1.258 (Claude Code)",
+  "python": "3.10.1",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "tasks": [
+    "import_shadow",
+    "shared_cache_order",
+    "onion_three_layers",
+    "windows_replace",
+    "conftest_warning_error",
+    "unicode_normalization"
+  ],
+  "configs": {
+    "A": {
+      "model": "haiku",
+      "plugin": false,
+      "label": "haiku, no plugin"
+    },
+    "B": {
+      "model": "haiku",
+      "plugin": true,
+      "label": "haiku + cc-oracle"
+    },
+    "C": {
+      "model": "sonnet",
+      "plugin": false,
+      "label": "sonnet, no plugin"
+    },
+    "D": {
+      "model": "sonnet",
+      "plugin": true,
+      "label": "sonnet + cc-oracle"
+    }
+  },
+  "reps": 1,
+  "cap_usd": 3.0,
+  "max_turns": 60,
+  "effort": "low",
+  "timeout_s": 900,
+  "prompt": "The test suite in tests/ has failures. Fix the code so that every test passes.\n\nRules:\n- Do not modify, delete, or add anything under tests/.\n- Run `python -m pytest -q` to check your work.\n- Stop as soon as the whole suite passes.",
+  "plugin_dir": "C:\\proga\\claude-oracle"
+}
