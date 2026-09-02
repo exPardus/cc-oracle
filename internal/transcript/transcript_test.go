@@ -1170,3 +1170,86 @@ func BenchmarkLoadTurnLarge(b *testing.B) {
 		sinkEntries = LoadTurn(p)
 	}
 }
+
+// --- FailureStreak -----------------------------------------------------------
+
+func toolUse(id, name string) Entry {
+	return Entry{Type: "assistant", Content: Content{Blocks: []Block{
+		{Type: "tool_use", ID: id, Name: name}}}}
+}
+
+func toolResult(id string, isError bool) Entry {
+	return Entry{Type: "user", Content: Content{Blocks: []Block{
+		{Type: "tool_result", ToolUseID: id, IsError: isError}}}}
+}
+
+func TestFailureStreak(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []Entry
+		want    int
+		tools   []string
+	}{
+		{"three exec failures", []Entry{
+			toolUse("a", "PowerShell"), toolResult("a", true),
+			toolUse("b", "PowerShell"), toolResult("b", true),
+			toolUse("c", "Bash"), toolResult("c", true),
+		}, 3, []string{"PowerShell", "PowerShell", "Bash"}},
+
+		{"probe failure neither extends nor breaks", []Entry{
+			toolUse("a", "PowerShell"), toolResult("a", true),
+			toolUse("r", "Read"), toolResult("r", true),
+			toolUse("b", "Bash"), toolResult("b", true),
+		}, 2, []string{"PowerShell", "Bash"}},
+
+		{"success breaks the run", []Entry{
+			toolUse("a", "Bash"), toolResult("a", true),
+			toolUse("b", "Bash"), toolResult("b", false),
+			toolUse("c", "Bash"), toolResult("c", true),
+		}, 1, []string{"Bash"}},
+
+		{"probes only never count", []Entry{
+			toolUse("r", "Read"), toolResult("r", true),
+			toolUse("g", "Glob"), toolResult("g", true),
+			toolUse("p", "Grep"), toolResult("p", true),
+			toolUse("l", "LS"), toolResult("l", true),
+		}, 0, nil},
+
+		{"no tools at all", []Entry{}, 0, nil},
+
+		{"successes only", []Entry{
+			toolUse("a", "Bash"), toolResult("a", false),
+			toolUse("b", "Bash"), toolResult("b", false),
+		}, 0, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, tools := FailureStreak(c.entries)
+			if got != c.want {
+				t.Errorf("count = %d, want %d", got, c.want)
+			}
+			if len(tools) != len(c.tools) {
+				t.Fatalf("tools = %v, want %v", tools, c.tools)
+			}
+			for i := range tools {
+				if tools[i] != c.tools[i] {
+					t.Errorf("tools = %v, want %v", tools, c.tools)
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestFailureStreakUnknownToolCountsAsExec(t *testing.T) {
+	// A result whose tool_use went unrecorded must not be silently treated as a
+	// probe, which would let a real stall slip past.
+	entries := []Entry{
+		toolResult("missing1", true),
+		toolResult("missing2", true),
+		toolResult("missing3", true),
+	}
+	if got, _ := FailureStreak(entries); got != 3 {
+		t.Errorf("count = %d, want 3", got)
+	}
+}

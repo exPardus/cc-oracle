@@ -562,3 +562,159 @@ def test_parity_real_transcript_with_appended_stuck_turn(tmp_path, src):
     dst.write_bytes(body)
     py, go = _both("stop", _payload(str(dst)), tmp_path)
     _assert_identical(py, go, f"real+stuck {src.name}")
+
+
+# --- progress-stall families --------------------------------------------------
+
+STALL_FIRING = [
+    "I'm not making progress on this deadlock.",
+    "I am not making any progress here.",
+    "We are not making much progress on the migration.",
+    "I can't make progress until the linker is fixed.",
+    "I keep getting the same TypeError from the parser.",
+    "I keep hitting the same assertion failure.",
+    "We have been seeing the same timeout all afternoon.",
+    "I still can't get the mock to fire.",
+    "I still cannot reproduce the crash locally.",
+    "I'm not getting anywhere with this stack trace.",
+    "This is not getting me anywhere.",
+]
+
+STALL_SILENT = [
+    "The build is not making progress because the queue is paused. Fixed.",
+    "The retry keeps getting the same result, which is correct. Done.",
+    "The migration still cannot run on Postgres 12; documented that. Shipped.",
+    "I am not out of ideas, and I am making progress. Continuing.",
+    "This did not get anywhere near the memory limit. Shipped.",
+    "Progress bars now render correctly. Done.",
+    "I tried everything on the checklist and all of it passed. Done.",
+    "I still can't tell which layout you prefer - A or B?",
+]
+
+
+@pytest.mark.parametrize("text", STALL_FIRING + STALL_SILENT)
+def test_parity_progress_stall_corpus(tmp_path, text):
+    path = _transcript(tmp_path, [_user("do the thing"), _assistant(text)])
+    py, go = _both("stop", _payload(path), tmp_path)
+    _assert_identical(py, go, f"stall text={text!r}")
+
+
+# --- last_assistant_message fast path ----------------------------------------
+
+def _payload_with_message(transcript_path, message, prompt_id="p-1", session=None):
+    body = {
+        "session_id": session or f"diff-{time.time_ns()}",
+        "prompt_id": prompt_id,
+        "transcript_path": transcript_path,
+        "stop_hook_active": False,
+    }
+    if message is not _MISSING:
+        body["last_assistant_message"] = message
+    return json.dumps(body).encode("utf-8")
+
+
+_MISSING = object()
+
+
+@pytest.mark.parametrize("message", [
+    "I'm stuck. The mock never fires.",
+    "All done. Tests pass.",
+    "",
+    "   ",
+    None,
+    42,
+    [],
+    {},
+    _MISSING,
+    "I still can't get the mock to fire.",
+    "Should I use A or B?",
+])
+def test_parity_last_assistant_message_variants(tmp_path, message):
+    """The direct field must be honoured, or fall back, identically on both sides."""
+    path = _transcript(tmp_path, [_user("x"), _assistant("I'm stuck. Stale on-disk text.")])
+    payload = _payload_with_message(path, message)
+    py, go = _both("stop", payload, tmp_path)
+    label = "MISSING" if message is _MISSING else repr(message)
+    _assert_identical(py, go, f"last_assistant_message={label}")
+
+
+def test_parity_direct_message_on_unflushed_transcript(tmp_path):
+    """Tail is a thinking block only: the field must win without any waiting."""
+    thinking = {"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "thinking", "thinking": "hmm"}]}}
+    path = _transcript(tmp_path, [_user("x"), thinking])
+    payload = _payload_with_message(path, "I'm stuck. The final text arrived late.")
+    py, go = _both("stop", payload, tmp_path)
+    _assert_identical(py, go, "direct message, unflushed transcript")
+
+
+# --- behavioral trigger: consecutive tool failures ---------------------------
+
+def _tool_use(tid, name):
+    return {"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": tid, "name": name, "input": {}}]}}
+
+
+def _tool_result(tid, is_error):
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tid, "is_error": is_error, "content": "x"}]}}
+
+
+def _turn(tools_errors, tail):
+    entries = [_user("fix the build")]
+    for i, (tool, err) in enumerate(tools_errors):
+        entries.append(_tool_use(f"t{i}", tool))
+        entries.append(_tool_result(f"t{i}", err))
+    if tail is not None:
+        entries.append(_assistant(tail))
+    return entries
+
+
+@pytest.mark.parametrize("tools_errors,tail,label", [
+    ([("PowerShell", True), ("PowerShell", True), ("Bash", True)], "Trying another approach.", "3 exec failures"),
+    ([("Bash", True), ("Bash", True)], "Trying another approach.", "2 exec failures"),
+    ([("Read", True), ("Glob", True), ("Grep", True), ("LS", True)], "Looking elsewhere.", "probes only"),
+    ([("Bash", True), ("Bash", False), ("Bash", True)], "Continuing.", "success breaks run"),
+    ([("PowerShell", True), ("Read", True), ("Bash", True)], "Continuing.", "probe mid-run"),
+    ([("Bash", True), ("Bash", True), ("Bash", True), ("Bash", True)], "Continuing.", "4 exec failures"),
+    ([("Bash", True), ("Bash", True), ("Bash", True)], "Should I try the other approach?", "streak + question"),
+    ([("Bash", True), ("Bash", True), ("Bash", True)], None, "streak, no trailing text"),
+    ([("Write", True), ("Write", True), ("Write", True)], "Continuing.", "3 Write failures"),
+])
+def test_parity_failure_streak(tmp_path, tools_errors, tail, label):
+    path = _transcript(tmp_path, _turn(tools_errors, tail))
+    py, go = _both("stop", _payload(path), tmp_path)
+    _assert_identical(py, go, f"streak: {label}")
+
+
+def test_parity_streak_after_oracle_consult(tmp_path):
+    entries = [_user("fix"),
+               {"type": "assistant", "message": {"role": "assistant", "content": [
+                   {"type": "tool_use", "name": "Task", "input": {"subagent_type": "oracle"}}]}}]
+    for i in range(3):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", True))
+    entries.append(_assistant("Continuing."))
+    py, go = _both("stop", _payload(_transcript(tmp_path, entries)), tmp_path)
+    _assert_identical(py, go, "streak after consult")
+
+
+@pytest.mark.parametrize("is_error", [True, False, "true", "false", 1, 0, None, "", []])
+def test_parity_is_error_truthiness(tmp_path, is_error):
+    """is_error is read with Python truthiness; the two sides must agree."""
+    entries = [_user("fix")]
+    for i in range(3):
+        entries.append(_tool_use(f"t{i}", "Bash"))
+        entries.append(_tool_result(f"t{i}", is_error))
+    entries.append(_assistant("Continuing."))
+    py, go = _both("stop", _payload(_transcript(tmp_path, entries)), tmp_path)
+    _assert_identical(py, go, f"is_error={is_error!r}")
+
+
+@pytest.mark.parametrize("streak", [0, 1, 2, 3, 5, 99, "3", 3.5, True, -1, None])
+def test_parity_failure_streak_config(tmp_path, streak):
+    _write_configs(tmp_path, {"failure_streak": streak})
+    path = _transcript(tmp_path, _turn(
+        [("Bash", True), ("Bash", True), ("Bash", True)], "Continuing."))
+    py, go = _both("stop", _payload(path), tmp_path)
+    _assert_identical(py, go, f"failure_streak={streak!r}")

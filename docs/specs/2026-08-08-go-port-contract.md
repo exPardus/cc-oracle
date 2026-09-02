@@ -530,3 +530,57 @@ identical.
 - No new module dependencies. Standard library only, matching the original's
   stated constraint.
 - `go vet ./...` must be clean.
+
+## Post-port changes (2026-08-10)
+
+The port froze behavior; these three changes deliberately alter it, and each
+landed in BOTH implementations together with differential coverage.
+
+**The flush race is retired where the harness allows it.** The Stop payload
+carries `last_assistant_message`. It comes from the harness's memory, so unlike
+the on-disk transcript it cannot be the stale copy the backoff existed to work
+around. When the field is present and non-blank, the whole retry budget is
+skipped. When absent or blank — an older Claude Code, or a turn that ended
+without text — the original transcript path and its bounded re-read still run.
+The transcript is still loaded either way, because the consult check and the
+failure streak read it; nothing waits on it any more.
+
+**Four progress-stall marker families were added**, and a fifth was rejected.
+Mining 1,741 turn-final assistant messages from 534 real transcripts found the
+existing phrase list missing nothing: the detector fired on 0 genuine turns, and
+every candidate the broad net flagged was a correct non-fire (third-person,
+negated, or inside quoted text). The additions therefore keep the same anchoring
+discipline rather than widening reach: `not making progress`,
+`keep getting the same`, `still can't`, `not getting anywhere`.
+
+`tried everything` was drafted and then dropped: it fires on "I tried everything
+on the checklist and all of it passed", an ordinary success report. Under the
+project's own doctrine that a false positive is worse than a miss, one plausible
+misfire outweighs a family with no corpus evidence behind it. Re-running the
+corpus after the change confirmed zero new false positives.
+
+**A behavioral trigger was added**, and it is the first time this hook nudges
+when the model never claimed uncertainty. Three consecutive failing non-probe
+tool results in a turn is enough on its own. Thresholds came from measurement,
+not intuition:
+
+| signal | share of 1,741 real turns |
+|---|---|
+| same tool+input 3+ times in a turn | 10.80% |
+| 20+ tool calls in a turn | 9.02% |
+| 3+ tool errors in a turn | 2.87% |
+| **3+ consecutive non-probe failures** | **0.34%** |
+| 5+ consecutive non-probe failures | 0% |
+
+Read-only lookups (`Read`, `Glob`, `Grep`, `LS`, `NotebookRead`) are excluded
+because a run of those failing is a model hunting for a file. A probe failure
+neither extends nor breaks a run; a success breaks it. The trigger inherits
+every existing suppression, including the question exemption — a turn that ends
+by asking the user something is legitimate however many tools failed in it.
+The `failure_streak` knob tunes the threshold, and `0` disables it.
+
+**The nudge now quotes the trigger.** A marker nudge carries the model's own
+sentence (whitespace collapsed, double quotes folded to single so the fragment
+cannot terminate its own quoting, truncated at 160 characters); a streak nudge
+names the count and the tools. New goldens were generated from the Python
+implementation, so the byte-parity guarantee still holds.

@@ -48,6 +48,14 @@ MARKERS = (
     "going in circles",
     "can't work out",
     "no idea how",
+    # Progress-stall families. Added after mining 1,741 real turns showed the
+    # phrase list missing nothing in practice, so these stay as narrow as the
+    # rest: first-person anchored, negation still breaks adjacency, and the
+    # question exemption still wins over all of them.
+    "not making progress",
+    "keep getting the same",
+    "still can't",
+    "not getting anywhere",
 )
 
 # First-person subject fragments. Anchoring rule: the pronoun must sit
@@ -83,6 +91,20 @@ _FAMILY_PATTERNS = {
     "no idea how":
         r"\b(?:i|we) " + _ADV + r"have " + _ADV + r"no idea (?:how(?! long| many| much| big| often)|why)\b"
         r"|\b(?:i've|we've) " + _ADV + r"(?:got )?no idea (?:how(?! long| many| much| big| often)|why)\b",
+    # Progress-stall families. "not" appears literally inside these idioms
+    # rather than as a negation of them, which is why they are spelled out
+    # here instead of relying on the adverb slot.
+    "not making progress":
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"not making (?:any |much |real )?progress\b"
+        r"|\b(?:i|we) " + _ADV + r"(?:can't|cannot|can not) make (?:any |much |real )?progress\b",
+    "keep getting the same":
+        r"\b(?:i|we) " + _ADV + r"keep (?:getting|hitting|seeing) the same\b"
+        r"|\b(?:i|we)(?:'ve| have) " + _ADV + r"been (?:getting|hitting|seeing) the same\b",
+    "still can't":
+        r"\b(?:i|we) " + _ADV + r"still " + _ADV + r"(?:can't|cannot|can not)\b",
+    "not getting anywhere":
+        r"\b(?:i'm|i am|we're|we are) " + _ADV + r"not getting anywhere\b"
+        r"|\b(?:this|that) (?:is|is not|isn't) getting (?:me|us) anywhere\b",
 }
 _FAMILY_RES = {key: re.compile(pat) for key, pat in _FAMILY_PATTERNS.items()}
 
@@ -140,6 +162,9 @@ DEFAULTS = {
     "markers_add": (),
     "markers_remove": (),
     "state_dir": None,
+    # Consecutive non-probe tool failures that trigger a nudge on their own,
+    # independent of what the model said. 0 disables the behavioral trigger.
+    "failure_streak": 3,
 }
 KILL_SWITCH_ENV = "CC_ORACLE_DISABLE"
 
@@ -172,6 +197,10 @@ def load_config():
             cfg[key] = raw[key]
     if isinstance(raw.get("state_dir"), str) and raw["state_dir"].strip():
         cfg["state_dir"] = raw["state_dir"]
+    streak = raw.get("failure_streak")
+    # bool is a subclass of int, so True would otherwise read as 1.
+    if isinstance(streak, int) and not isinstance(streak, bool) and streak >= 0:
+        cfg["failure_streak"] = streak
     markers = raw.get("markers")
     if isinstance(markers, dict):
         for key, dest in (("add", "markers_add"), ("remove", "markers_remove")):
@@ -254,6 +283,63 @@ def should_nudge(text, markers=MARKERS):
         return False
     stripped = _strip_quoted(text)
     return marker_hit(stripped, markers) and not is_question_turn(stripped, markers)
+
+
+def first_marker_sentence(text, markers=MARKERS):
+    """The sentence that tripped detection, for quoting back in the nudge.
+
+    Returns None when nothing matched. Falls back to the whole text when a
+    marker matches across a sentence boundary and no single sentence carries
+    it on its own.
+    """
+    if not text or not marker_hit(text, markers):
+        return None
+    for s in _sentences(text):
+        if marker_hit(s, markers):
+            return s
+    return text
+
+
+# Read-only lookups failing in a row is ordinary path-probing, not flailing:
+# mining 1,741 real turns, excluding these is what separates a genuine stall
+# (PowerShell x3, Write x3) from a model hunting for a file.
+PROBE_TOOLS = frozenset(("Read", "Glob", "Grep", "LS", "NotebookRead"))
+
+
+def failure_streak(entries):
+    """Longest run of consecutive failing NON-probe tool results in the turn.
+
+    A success breaks the run. A probe-tool failure neither extends nor breaks
+    it, so hunting for a file mid-stall does not reset the count. Returns
+    (length, tools) where tools names the run's tools in first-seen order.
+    """
+    names = {}
+    for entry in entries:
+        if entry.get("type") != "assistant":
+            continue
+        for b in _content_blocks(entry):
+            if b.get("type") == "tool_use":
+                names[b.get("id")] = str(b.get("name") or "")
+
+    best, best_tools = 0, ()
+    run, current = 0, []
+    for entry in entries:
+        if entry.get("type") != "user":
+            continue
+        for b in _content_blocks(entry):
+            if b.get("type") != "tool_result":
+                continue
+            tool = names.get(b.get("tool_use_id"), "")
+            if not b.get("is_error"):
+                run, current = 0, []
+                continue
+            if tool in PROBE_TOOLS:
+                continue
+            run += 1
+            current.append(tool or "?")
+            if run > best:
+                best, best_tools = run, tuple(current)
+    return best, best_tools
 
 
 def load_entries(path):
@@ -374,12 +460,53 @@ def oracle_consulted_this_turn(entries):
     return False
 
 
-NUDGE = (
-    "You stated uncertainty this turn without consulting the oracle. "
+_BRIEF_TAIL = (
     "Dispatch the `oracle` agent now with a full brief — Goal, Problem (errors verbatim), "
     "Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) — "
     "then implement its plan."
 )
+
+# Kept as the wording used when the triggering sentence cannot be isolated.
+NUDGE = "You stated uncertainty this turn without consulting the oracle. " + _BRIEF_TAIL
+
+# Long enough to carry the claim, short enough that the nudge stays scannable.
+_QUOTE_LIMIT = 160
+
+
+def _quote_for_nudge(sentence):
+    """Collapse a matched sentence into a short, quotable fragment.
+
+    Double quotes are folded to single so the fragment cannot terminate the
+    quoting around it, and whitespace is collapsed so a multi-line statement
+    does not sprawl across the nudge.
+    """
+    text = re.sub(r"\s+", " ", (sentence or "").strip()).replace('"', "'")
+    if len(text) > _QUOTE_LIMIT:
+        text = text[:_QUOTE_LIMIT].rstrip() + "..."
+    return text
+
+
+def marker_nudge(sentence):
+    """Nudge for a stated-uncertainty trigger, quoting the model's own words."""
+    quoted = _quote_for_nudge(sentence)
+    if not quoted:
+        return NUDGE
+    return ('You stated uncertainty this turn without consulting the oracle: "%s". '
+            % quoted) + _BRIEF_TAIL
+
+
+def _format_tools(tools):
+    seen = []
+    for t in tools:
+        if t and t not in seen:
+            seen.append(t)
+    return ", ".join(seen) if seen else "unknown"
+
+
+def streak_nudge(count, tools):
+    """Nudge for the behavioral trigger: repeated failures, nothing said."""
+    return ("%d consecutive tool failures this turn (%s) without consulting the oracle. "
+            % (count, _format_tools(tools))) + _BRIEF_TAIL
 
 DOCTRINE = """<oracle-plugin>
 Uncertainty is a signal, not a failure. The moment you notice you are unsure, stuck, confused, or going in circles: do NOT keep attempting solo and pollute your context — dispatch the `oracle` agent first, then implement its plan yourself.
@@ -496,37 +623,67 @@ def run_stop(stdin_text):
         # Scan the CURRENT turn only: a stuck statement from a previous turn
         # was already stop-checked and must not retrigger.
         entries = entries[_turn_start(entries):]
-        # Flush race: the harness can fire Stop hooks before the turn's final
-        # assistant text hits the disk (live incident: only a thinking-block
-        # entry was flushed; the text landed ~50ms after this hook read the
-        # file, so a stuck turn was waved through). An unflushed tail is the
-        # signature — see _turn_tail_flushed for why the probe is the turn's
-        # LAST assistant entry and not "any text in the turn". Wait and
-        # re-read on a bounded backoff, then fail open as before.
-        for delay in _FLUSH_DELAYS:
-            if _turn_tail_flushed(entries):
-                break
-            try:
-                _sleep(delay)
-            except KeyboardInterrupt:
-                # KeyboardInterrupt is a BaseException, so the outer handler
-                # would not catch it: Ctrl+C during the wait would print a
-                # traceback and exit nonzero, which hooks.json turns into a
-                # full re-run of the hook. Stay silent instead.
-                return 0, ""
-            fresh = load_entries(transcript_path)
-            # An empty re-read means a torn or locked file mid-write — exactly
-            # what the retry exists to ride out. Keep the entries we already
-            # have and spend the next delay rather than abandoning the budget.
-            if fresh:
-                # Recomputing the turn boundary is deliberate: if the user
-                # started a new turn during the wait, this slice moves past the
-                # old one and the stuck statement goes unnudged. That is the
-                # fail-open direction and must stay that way — pinning the
-                # original boundary would let a stale turn block a fresh prompt.
-                entries = fresh[_turn_start(fresh):]
-        if not should_nudge(last_assistant_text(entries), effective_markers(cfg)):
+
+        # The harness hands us the turn's final assistant text directly. It
+        # comes from memory rather than disk, so it is never the stale copy the
+        # flush-race retry existed to work around -- when it is present, that
+        # whole backoff budget is skipped. The transcript is still read, for
+        # the consult check and the failure streak, but nothing waits on it.
+        direct = payload.get("last_assistant_message")
+        if isinstance(direct, str) and direct.strip():
+            text = direct
+        else:
+            # Older harnesses omit the field. Fall back to the transcript, and
+            # to the bounded re-read that covers its flush race: the harness can
+            # fire Stop before the turn's final text reaches disk (live
+            # incident: only a thinking-block entry was flushed, the text landed
+            # ~50ms later, and a stuck turn was waved through). See
+            # _turn_tail_flushed for why the probe is the turn's LAST assistant
+            # entry rather than "any text in the turn".
+            for delay in _FLUSH_DELAYS:
+                if _turn_tail_flushed(entries):
+                    break
+                try:
+                    _sleep(delay)
+                except KeyboardInterrupt:
+                    # KeyboardInterrupt is a BaseException, so the outer handler
+                    # would not catch it: Ctrl+C during the wait would print a
+                    # traceback and exit nonzero, which hooks.json turns into a
+                    # full re-run of the hook. Stay silent instead.
+                    return 0, ""
+                fresh = load_entries(transcript_path)
+                # An empty re-read means a torn or locked file mid-write --
+                # exactly what the retry exists to ride out. Keep the entries we
+                # already have and spend the next delay rather than abandoning
+                # the budget.
+                if fresh:
+                    # Recomputing the turn boundary is deliberate: if the user
+                    # started a new turn during the wait, this slice moves past
+                    # the old one and the stuck statement goes unnudged. That is
+                    # the fail-open direction and must stay that way.
+                    entries = fresh[_turn_start(fresh):]
+            text = last_assistant_text(entries)
+
+        markers = effective_markers(cfg)
+        stripped = _strip_quoted(text)
+        # A turn that ends by asking the user something is legitimate, whatever
+        # else happened in it. This exemption governs BOTH triggers.
+        if is_question_turn(stripped, markers):
             return 0, ""
+
+        reason = None
+        sentence = first_marker_sentence(stripped, markers)
+        if sentence is not None:
+            reason = marker_nudge(sentence)
+        else:
+            threshold = cfg["failure_streak"]
+            if threshold:
+                count, tools = failure_streak(entries)
+                if count >= threshold:
+                    reason = streak_nudge(count, tools)
+        if reason is None:
+            return 0, ""
+
         if oracle_consulted_this_turn(entries):
             return 0, ""
         session_id = payload.get("session_id", "unknown")
@@ -535,7 +692,7 @@ def run_stop(stdin_text):
             return 0, ""
         if prompt_id:
             _record_block(session_id, prompt_id, cfg)
-        return 0, json.dumps({"decision": "block", "reason": NUDGE})
+        return 0, json.dumps({"decision": "block", "reason": reason})
     except Exception:
         return 0, ""
 

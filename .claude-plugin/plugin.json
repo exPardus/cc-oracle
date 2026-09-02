@@ -1,11 +1,17 @@
 {
   "name": "oracle",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "When unsure or stuck, consult a best-model read-only oracle instead of flailing solo.",
   "author": {
     "name": "Techn0Ninja27"
   },
   "license": "MIT",
   "repository": "https://github.com/exPardus/cc-oracle",
-  "keywords": ["oracle", "escalation", "consult", "subagent", "uncertainty"]
+  "keywords": [
+    "oracle",
+    "escalation",
+    "consult",
+    "subagent",
+    "uncertainty"
+  ]
 }

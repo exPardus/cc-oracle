@@ -52,6 +52,14 @@ var Markers = []string{
 	"going in circles",
 	"can't work out",
 	"no idea how",
+	// Progress-stall families, added after mining 1,741 real turns showed
+	// the phrase list missing nothing in practice. They stay as narrow as the
+	// rest: first-person anchored, negation still breaks adjacency, and the
+	// question exemption still wins over all of them.
+	"not making progress",
+	"keep getting the same",
+	"still can't",
+	"not getting anywhere",
 }
 
 // adv is the first-person anchoring rule's adverb slot: the pronoun must sit
@@ -92,6 +100,16 @@ var familyPatterns = map[string]string{
 	// interrogative is captured so the match site knows whether to check.
 	noIdeaFamily: `\b(?:i|we) ` + adv + `have ` + adv + `no idea (how|why)\b` +
 		`|\b(?:i've|we've) ` + adv + `(?:got )?no idea (how|why)\b`,
+	// Progress-stall families. "not" sits literally inside these idioms
+	// rather than negating them, which is why they are spelled out here
+	// instead of relying on the adverb slot to keep negation out.
+	"not making progress": `\b(?:i'm|i am|we're|we are) ` + adv + `not making (?:any |much |real )?progress\b` +
+		`|\b(?:i|we) ` + adv + `(?:can't|cannot|can not) make (?:any |much |real )?progress\b`,
+	"keep getting the same": `\b(?:i|we) ` + adv + `keep (?:getting|hitting|seeing) the same\b` +
+		`|\b(?:i|we)(?:'ve| have) ` + adv + `been (?:getting|hitting|seeing) the same\b`,
+	"still can't": `\b(?:i|we) ` + adv + `still ` + adv + `(?:can't|cannot|can not)\b`,
+	"not getting anywhere": `\b(?:i'm|i am|we're|we are) ` + adv + `not getting anywhere\b` +
+		`|\b(?:this|that) (?:is|is not|isn't) getting (?:me|us) anywhere\b`,
 }
 
 // familyMatcher wraps a family regex with the lookahead emulation.
@@ -300,4 +318,21 @@ func ShouldNudge(text string, markers map[string]struct{}) bool {
 	}
 	stripped := StripQuoted(text)
 	return MarkerHit(stripped, markers) && !IsQuestionTurn(stripped, markers)
+}
+
+// FirstMarkerSentence returns the sentence that tripped detection, so the nudge
+// can quote the model's own words back, or "" when nothing matched.
+//
+// Falls back to the whole text when a marker matches across what the splitter
+// treats as a sentence boundary and no single sentence carries it alone.
+func FirstMarkerSentence(text string, markers map[string]struct{}) string {
+	if text == "" || !MarkerHit(text, markers) {
+		return ""
+	}
+	for _, s := range sentences(text) {
+		if MarkerHit(s, markers) {
+			return s
+		}
+	}
+	return text
 }

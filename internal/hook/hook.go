@@ -10,6 +10,7 @@ package hook
 import (
 	"bytes"
 	"encoding/json"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,10 +25,69 @@ import (
 // Nudge and Doctrine are copied verbatim from the Python implementation. The
 // differential test compares emitted bytes, so any edit here has to be made on
 // both sides.
-const Nudge = "You stated uncertainty this turn without consulting the oracle. " +
-	"Dispatch the `oracle` agent now with a full brief — Goal, Problem (errors verbatim), " +
-	"Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) — " +
+const briefTail = "Dispatch the `oracle` agent now with a full brief \u2014 Goal, Problem (errors verbatim), " +
+	"Tried (attempts + why each failed), Context (files/constraints), Question (specific ask) \u2014 " +
 	"then implement its plan."
+
+// Nudge is the wording used when the triggering sentence cannot be isolated.
+const Nudge = "You stated uncertainty this turn without consulting the oracle. " + briefTail
+
+// quoteLimit is long enough to carry the claim, short enough that the nudge
+// stays scannable.
+const quoteLimit = 160
+
+// quoteForNudge collapses a matched sentence into a short quotable fragment.
+// Double quotes fold to single so the fragment cannot terminate the quoting
+// around it, and whitespace collapses so a multi-line statement does not
+// sprawl across the nudge.
+func quoteForNudge(sentence string) string {
+	text := strings.TrimSpace(whitespaceRun.ReplaceAllString(sentence, " "))
+	text = strings.ReplaceAll(text, `"`, "'")
+	if len([]rune(text)) > quoteLimit {
+		text = strings.TrimRight(string([]rune(text)[:quoteLimit]), " ") + "..."
+	}
+	return text
+}
+
+// MarkerNudge is the nudge for a stated-uncertainty trigger, quoting the
+// model's own words back so the brief starts from something concrete.
+func MarkerNudge(sentence string) string {
+	quoted := quoteForNudge(sentence)
+	if quoted == "" {
+		return Nudge
+	}
+	return `You stated uncertainty this turn without consulting the oracle: "` + quoted + `". ` + briefTail
+}
+
+func formatTools(tools []string) string {
+	var seen []string
+	for _, t := range tools {
+		if t == "" {
+			continue
+		}
+		dup := false
+		for _, s := range seen {
+			if s == t {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			seen = append(seen, t)
+		}
+	}
+	if len(seen) == 0 {
+		return "unknown"
+	}
+	return strings.Join(seen, ", ")
+}
+
+// StreakNudge is the nudge for the behavioral trigger: repeated tool failures
+// with no uncertainty stated at all.
+func StreakNudge(count int, tools []string) string {
+	return strconv.Itoa(count) + " consecutive tool failures this turn (" +
+		formatTools(tools) + ") without consulting the oracle. " + briefTail
+}
 
 const Doctrine = `<oracle-plugin>
 Uncertainty is a signal, not a failure. The moment you notice you are unsure, stuck, confused, or going in circles: do NOT keep attempting solo and pollute your context — dispatch the ` + "`oracle`" + ` agent first, then implement its plan yourself.
@@ -90,39 +150,63 @@ func RunStop(stdinText string) (code int, out string) {
 	// Scan the CURRENT turn only: a stuck statement from a previous turn was
 	// already stop-checked and must not retrigger. LoadTurn returns exactly
 	// LoadEntries(path)[TurnStart(...):] without parsing the entries before the
-	// boundary — on a multi-megabyte transcript that is the difference between
-	// ~110ms and ~5ms, and the flush-race loop below would pay it again per
-	// retry. It is empty only when the whole transcript is, so this also stands
-	// in for Python's "no entries at all" check.
+	// boundary. It is empty only when the whole transcript is, so this also
+	// stands in for Python's "no entries at all" check.
 	entries := transcript.LoadTurn(transcriptPath)
 	if len(entries) == 0 {
 		return 0, ""
 	}
 
-	// Flush race: the harness can fire Stop hooks before the turn's final
-	// assistant text reaches disk. See transcript.TurnTailFlushed for why the
-	// probe is the turn's LAST assistant entry rather than "any text in turn".
-	for _, delay := range FlushDelays {
-		if transcript.TurnTailFlushed(entries) {
-			break
+	// The harness hands us the turn's final assistant text directly. It comes
+	// from memory rather than disk, so it is never the stale copy the flush-race
+	// retry existed to work around -- when it is present, that whole backoff
+	// budget is skipped. The transcript is still read, for the consult check and
+	// the failure streak, but nothing waits on it.
+	text := jsonStringOnly(payload["last_assistant_message"])
+	if strings.TrimSpace(text) == "" {
+		// Older harnesses omit the field. Fall back to the transcript and to the
+		// bounded re-read that covers its flush race: the harness can fire Stop
+		// before the turn's final text reaches disk. See TurnTailFlushed for why
+		// the probe is the turn's LAST assistant entry, not "any text in turn".
+		for _, delay := range FlushDelays {
+			if transcript.TurnTailFlushed(entries) {
+				break
+			}
+			sleep(delay)
+			// Recomputing the boundary is deliberate: if the user started a new
+			// turn during the wait, LoadTurn moves past the old one and the stuck
+			// statement goes unnudged. That is the fail-open direction.
+			fresh := transcript.LoadTurn(transcriptPath)
+			// An empty re-read means a torn or locked file mid-write, exactly what
+			// the retry exists to ride out. Keep the entries already held and
+			// spend the next delay rather than abandoning the budget.
+			if len(fresh) > 0 {
+				entries = fresh
+			}
 		}
-		sleep(delay)
-		// Recomputing the boundary is deliberate: if the user started a new turn
-		// during the wait, LoadTurn moves past the old one and the stuck
-		// statement goes unnudged. That is the fail-open direction and must stay
-		// that way.
-		fresh := transcript.LoadTurn(transcriptPath)
-		// An empty re-read means a torn or locked file mid-write — exactly what
-		// the retry exists to ride out. Keep the entries already held and spend
-		// the next delay rather than abandoning the budget.
-		if len(fresh) > 0 {
-			entries = fresh
-		}
+		text = transcript.LastAssistantText(entries)
 	}
 
-	if !detect.ShouldNudge(transcript.LastAssistantText(entries), config.EffectiveMarkers(cfg)) {
+	markers := config.EffectiveMarkers(cfg)
+	stripped := detect.StripQuoted(text)
+	// A turn that ends by asking the user something is legitimate, whatever else
+	// happened in it. This exemption governs BOTH triggers.
+	if detect.IsQuestionTurn(stripped, markers) {
 		return 0, ""
 	}
+
+	var reason string
+	if sentence := detect.FirstMarkerSentence(stripped, markers); sentence != "" {
+		reason = MarkerNudge(sentence)
+	} else if cfg.FailureStreak > 0 {
+		if count, tools := transcript.FailureStreak(entries); count >= cfg.FailureStreak {
+			reason = StreakNudge(count, tools)
+		}
+	}
+	if reason == "" {
+		return 0, ""
+	}
+
 	if transcript.OracleConsultedThisTurn(entries) {
 		return 0, ""
 	}
@@ -146,7 +230,7 @@ func RunStop(stdinText string) (code int, out string) {
 
 	encoded, err := pyjson.Marshal(pyjson.Object{
 		{Key: "decision", Value: "block"},
-		{Key: "reason", Value: Nudge},
+		{Key: "reason", Value: reason},
 	})
 	if err != nil {
 		return 0, ""
@@ -287,3 +371,7 @@ func truthyPythonStr(raw json.RawMessage) string {
 	}
 	return pythonStr(raw, "")
 }
+
+// whitespaceRun mirrors Python's `\s+` on str patterns, which is Unicode-aware
+// where Go's `\s` is ASCII-only.
+var whitespaceRun = regexp.MustCompile(`[\s\p{Z}\x{0085}\x{000B}]+`)

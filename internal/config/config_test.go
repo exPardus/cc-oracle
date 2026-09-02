@@ -38,6 +38,10 @@ var wantBaseline = []string{
 	"going in circles",
 	"can't work out",
 	"no idea how",
+	"not making progress",
+	"keep getting the same",
+	"still can't",
+	"not getting anywhere",
 }
 
 // unsetEnv removes key for the duration of the test. t.Setenv is called first
@@ -129,8 +133,8 @@ func assertLacks(t *testing.T, set map[string]struct{}, marker string) {
 // --- baseline marker list -----------------------------------------------------
 
 func TestBaselineMarkers(t *testing.T) {
-	if len(baselineMarkers) != 20 {
-		t.Fatalf("baseline has %d markers, want 20", len(baselineMarkers))
+	if len(baselineMarkers) != 24 {
+		t.Fatalf("baseline has %d markers, want 24", len(baselineMarkers))
 	}
 	if !reflect.DeepEqual(baselineMarkers, wantBaseline) {
 		t.Fatalf("baseline drifted from the Python MARKERS tuple\n got: %q\nwant: %q",
@@ -751,4 +755,42 @@ func isolateConfigDir(t *testing.T) string {
 	}
 	t.Setenv("CLAUDE_PLUGIN_DATA", base)
 	return dir
+}
+
+// --- failure_streak knob -----------------------------------------------------
+
+func TestFailureStreakDefaultsToThree(t *testing.T) {
+	isolateConfigDir(t)
+	if got := Load().FailureStreak; got != 3 {
+		t.Errorf("FailureStreak = %d, want 3", got)
+	}
+}
+
+func TestFailureStreakParsing(t *testing.T) {
+	cases := []struct {
+		body string
+		want int
+	}{
+		{`{"failure_streak": 5}`, 5},
+		{`{"failure_streak": 0}`, 0},
+		{`{"failure_streak": 1}`, 1},
+		// wrong types and out-of-range values leave the default in place.
+		{`{"failure_streak": "3"}`, 3},
+		{`{"failure_streak": 3.5}`, 3},
+		{`{"failure_streak": true}`, 3},
+		{`{"failure_streak": -1}`, 3},
+		{`{"failure_streak": null}`, 3},
+		{`{"failure_streak": []}`, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.body, func(t *testing.T) {
+			dir := isolateConfigDir(t)
+			if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(c.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := Load().FailureStreak; got != c.want {
+				t.Errorf("FailureStreak = %d, want %d", got, c.want)
+			}
+		})
+	}
 }
